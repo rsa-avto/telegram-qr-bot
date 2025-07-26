@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: telegram-qr-bot
+    env: python
+    plan: free
+    region: frankfurt
+    buildCommand: ""
+    startCommand: python main.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false

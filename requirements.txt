@@ -1,0 +1,9 @@
+Flask
+pyTelegramBotAPI
+gunicorn
+apscheduler
+qrcode
+schedule
+aiofiles
+geopy
+pytesseract
