@@ -1,8 +1,3 @@
-import os
-from flask import Flask, request
-import telebot
-from telebot.types import Update
-from flask import Flask, request
 import html
 import difflib
 import re
@@ -11,6 +6,7 @@ import telebot
 from apscheduler.schedulers.background import BackgroundScheduler
 import signal
 import sys
+import scheduler
 import uuid
 import time
 from datetime import datetime, timedelta, date
@@ -32,6 +28,7 @@ from urllib.parse import unquote
 
 from aiofiles.os import remove
 
+from db_utils import execute_query
 from geopy.distance import geodesic
 from telebot.apihelper import ApiTelegramException
 from telebot import types
@@ -43,8 +40,12 @@ from telebot.handler_backends import State, StatesGroup
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime, timedelta, date
-import threading  
+import threading
+from types import SimpleNamespace
+import os
 
+#6332859587
+# --- НАСТРОЙКИ ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("❌ BOT_TOKEN не задан")
@@ -54,6 +55,7 @@ WEBHOOK_URL = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
+
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
@@ -62,22 +64,40 @@ def webhook():
         return '', 200
     return 'Unsupported Media Type', 415
 
+
 @app.route("/", methods=["GET"])
 def index():
     return "Бот работает!", 200
 
-
 ADMIN_ID = [5035760364]  # <-- ЗАМЕНИ на свой Telegram ID
 ADMIN_ID2 = 5035760364
-ADMIN_ID3 = 5035760364
-DAN_ID = 5035760364
+ADMIN_ID3 = 5035760364 #сто
+ADMIN_IDS = [5035760364]
+DIRECTOR_ID = 5035760364
+MASTER_CHAT_ID = 5035760364 #рихтовка
+DAN_TELEGRAM_ID = 5035760364
 OFFICE_COORDS = (53.548713,49.292195)
-
+TAXI_SETUP_MANAGER_ID = 5035760364
+OPERATORS_IDS = [8406093193, 7956696604, 5035760364, 8340223502]
+BONUS_PER_LITRE = 1
+STATION_OPERATORS = {
+    "Южное шоссе 129": 8340223502,
+    "Южное шоссе 12/2": 7956696604,
+    "Лесная 66А": 5035760364,
+    "Борковская 72/1": 8406093193
+}
+STATION_CODES_TO_ADDRESSES = {
+    "station_1": "Южное шоссе 129",
+    "station_2": "Южное шоссе 12/2",
+    "station_3": "Лесная 66А",
+    "station_4": "Борковская 72/1"
+}
+STATION_ADDRESSES_TO_CODES = {v: k for k, v in STATION_CODES_TO_ADDRESSES.items()}
 PUBLIC_ID = 'cloudpayments-public-id'
 API_KEY = 'cloudpayments-api-key'
 DB_PATH = 'cars.db'
 db_lock = threading.Lock()
-
+app = Flask(__name__)
 bot.add_custom_filter(custom_filters.StateFilter(bot))
 
 geolocator = Nominatim(user_agent="tolyatti_car_rental_bot", timeout=20)
@@ -91,6 +111,7 @@ selected_service = {}
 USER_SELECTED_RENT_START = {}
 user_sessions = {}
 USER_SELECTED_RENT_END = {}
+admin_waiting_for_fullname = {}
 USER_DRIVER_CALL_SIGN = {}
 USER_PHONE_NUMBER = {}
 rent_start_dates = {}
@@ -104,6 +125,7 @@ cursor = conn.cursor()
 user_car_messages = {}
 session = {}
 admin_reply_targets = {}
+user_purposes = {}
 # --- БАЗА ДАННЫХ ---
 def get_db_connection():
     conn = sqlite3.connect('cars.db', check_same_thread=False)
@@ -119,20 +141,30 @@ def get_db():
 def setup_tables():
     conn = get_db_connection()
     cursor = conn.cursor()
-    #cursor.execute('DROP TABLE cars')
-    #cursor.execute("ALTER TABLE users ADD COLUMN driver_license_photo TEXT;")
+    # cursor.execute("PRAGMA foreign_keys = OFF;")
+    # cursor.execute("DROP TABLE IF EXISTS users;")
+    # cursor.execute("PRAGMA foreign_keys = ON;")
+    # cursor.execute('DROP TABLE rental_history')
+
+    #cursor.execute("ALTER TABLE bookings_wash ADD COLUMN notified INTEGER DEFAULT 0")
+    #cursor.execute("ALTER TABLE shifts ADD COLUMN sold_sum INTEGER DEFAULT 0")
+    #cursor.execute("ALTER TABLE bookings ADD COLUMN contract_file_id TEXT")
     cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                phone TEXT UNIQUE,
-                name TEXT,
-                birthday_date TEXT,
-                telegram_id INTEGER UNIQUE,
-                driver_license_photo TEXT, 
-                status TEXT DEFAULT 'new',
-                bonus INTEGER DEFAULT '0'
-            )
-        ''')
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT UNIQUE,
+            name TEXT,
+            full_name TEXT,
+            birthday_date TEXT,
+            telegram_id INTEGER UNIQUE,
+            driver_license_photo TEXT,
+            passport_front_photo TEXT,
+            passport_back_photo TEXT,
+            status TEXT DEFAULT 'new',
+            bonus INTEGER DEFAULT 0,
+            purpose TEXT
+        )
+    ''')
 
     cursor.execute('''
                 CREATE TABLE IF NOT EXISTS bookings_taxi (
@@ -157,17 +189,25 @@ def setup_tables():
                     "Telegram_ID" INTEGER
                 )
             ''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS bookings
-    (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-     user_id INTEGER NOT NULL, car_id TEXT,
-      service TEXT DEFAULT 'rent',
-       date TEXT NOT NULL, time TEXT NOT NULL,
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS bookings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        car_id TEXT,
+        service TEXT DEFAULT 'rent',
+        target TEXT DEFAULT 'personal',
+        date TEXT NOT NULL,
+        time TEXT NOT NULL,
         status TEXT DEFAULT 'pending',
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-           notified INTEGER DEFAULT 0,
-            FOREIGN KEY(user_id) REFERENCES users(id));''')
-
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        notified INTEGER DEFAULT 0,
+        broken_notified INTEGER DEFAULT 0,
+        deposit_status TEXT DEFAULT 'unpaid',
+        docs_given INTEGER DEFAULT 0,
+        keys_given INTEGER DEFAULT 0,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+    ''')
     cursor.execute('''
             CREATE TABLE IF NOT EXISTS repair_bookings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,6 +217,7 @@ def setup_tables():
                 date TEXT NOT NULL,
                 time TEXT NOT NULL,
                 status TEXT DEFAULT 'pending',   -- pending, confirmed, rejected
+                sum_status TEXT DEFAULT unpaid,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 notified INTEGER DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users(id),
@@ -190,7 +231,8 @@ def setup_tables():
             name TEXT NOT NULL,
             date TEXT NOT NULL,
             time TEXT NOT NULL,
-            status TEXT DEFAULT 'pending'
+            status TEXT DEFAULT 'pending',
+            notified INTEGER DEFAULT 0
         )
     ''')
     cursor.execute('''
@@ -201,8 +243,12 @@ def setup_tables():
             transmission TEXT,
             service TEXT,
             number TEXT,
+            station TEXT,
+            price INTEGER,
             photo_url TEXT,
-            is_available INTEGER DEFAULT 1
+            is_available INTEGER DEFAULT 0,
+            is_broken INTEGER DEFAULT 0,
+            fix_date TEXT
         )
     ''')
     #cursor.execute("DROP TABLE IF EXISTS rental_history")
@@ -214,10 +260,14 @@ def setup_tables():
             rent_start TEXT NOT NULL,
             rent_end TEXT NOT NULL,
             price REAL NOT NULL,
+            end_time TEXT NOT NULL,
+            start_time TEXT NOT NULL,
+            status TEXT DEFAULT active,
+            sum_status TEXT DEFAULT unpaid,
             delivery_price REAL,
             delivery_address TEXT,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (car_id) REFERENCES cars(car_id)
+    FOREIGN KEY(car_id) REFERENCES cars(car_id) ON DELETE SET NULL,
+    FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE SET NULL
         )
     ''')
 
@@ -240,6 +290,33 @@ def setup_tables():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS operators (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        phone TEXT,
+        station TEXT,
+        pin TEXT,
+        registered INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 0
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS shifts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        operator_id INTEGER,
+        station TEXT,
+        active INTEGER DEFAULT 0,
+        gasoline_liters INTEGER DEFAULT 0,
+        gas_liters INTEGER DEFAULT 0,
+        sales_sum INTEGER DEFAULT 0,
+        bonus_sum REAL DEFAULT 0,
+        cars_sold INTEGER DEFAULT 0,
+        sold_sum INTEGER DEFAULT 0,
+        start_time TEXT,
+        end_time TEXT
+    )
+    """)
     conn.commit()
     conn.close()
 
@@ -250,8 +327,8 @@ months = {
     '10': 'Октябрь', '11': 'Ноябрь', '12': 'Декабрь'
 }
 OPERATORS = {
-    'station_1': 5035760364,
-    'station_2': 5035760364,
+    'station_1': 6332859587,
+    'station_2': 7956696604,
     'station_3': 5035760364,
     'station_4': 5035760364
 }
@@ -309,6 +386,10 @@ def remove_expired_bookings():
         # Проверять каждые 5 минут
         time.sleep(300)
 
+
+
+sent_notifications = set()
+
 # --- РАБОТА С ПОЛЬЗОВАТЕЛЕМ ---
 def check_user_in_db(phone_number):
     conn = get_db_connection()
@@ -320,16 +401,43 @@ def check_user_in_db(phone_number):
 
 user_states = {}
 add_car_flow = {}
-def get_state(user_id):
-    return user_states.get(user_id)
 
-def set_state(user_id, state):
-    user_states[user_id] = state
+
 
 def clear_state(user_id):
     user_states.pop(user_id, None)
 
+def get_session(chat_id):
+    """Получить сессию пользователя"""
+    if chat_id not in sessions:
+        sessions[chat_id] = {}
+    if isinstance(sessions[chat_id], str):
+        try:
+            sessions[chat_id] = json.loads(sessions[chat_id])
+        except json.JSONDecodeError:
+            sessions[chat_id] = {}
+    return sessions[chat_id]
 
+def set_session(chat_id, **kwargs):
+    """Обновить или создать сессию"""
+    session = get_session(chat_id)
+    session.update(kwargs)
+    sessions[chat_id] = session
+
+def clear_session(chat_id):
+    """Очистить сессию"""
+    sessions.pop(chat_id, None)
+
+def set_state(chat_id, state):
+    """Записать состояние"""
+    session = get_session(chat_id)
+    session["state"] = state
+    sessions[chat_id] = session
+    print(f"[DEBUG] state set for {chat_id} = {state}")
+
+def get_state(chat_id):
+    """Получить состояние"""
+    return get_session(chat_id).get("state")
 def add_rental_history(user_id, car_id, rent_start, rent_end, price):
     try:
         connection = sqlite3.connect('cars.db')
@@ -361,14 +469,19 @@ def update_user_name(phone, name):
     conn.commit()
     conn.close()
 
-def get_session(chat_id):
-    return user_sessions.setdefault(chat_id, {})
-
-def set_state(chat_id, state):
-    get_session(chat_id)["state"] = state
-
-def get_state(chat_id):
-    return get_session(chat_id).get("state")
+sessions = {}  # или твое хранилище
+import json
+def get_sessions(chat_id):
+    # Если сессии нет — создаём
+    if chat_id not in sessions:
+        sessions[chat_id] = {}
+    # Если вдруг сохранили как JSON-строку — парсим
+    if isinstance(sessions[chat_id], str):
+        try:
+            sessions[chat_id] = json.loads(sessions[chat_id])
+        except json.JSONDecodeError:
+            sessions[chat_id] = {}
+    return sessions[chat_id]
 
 def save_session(user_id, session):
     user_sessions[user_id] = session
@@ -388,7 +501,13 @@ def get_all_users():
     users = cursor.fetchall()  # список кортежей (phone, name)
     conn.close()
     return users
-
+def get_booked_dates_and_times_repair():
+    conn = sqlite3.connect('cars.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT date, time FROM repair_bookings")
+    booked_dates_and_times = cursor.fetchall()
+    conn.close()
+    return booked_dates_and_times
 
 def get_booked_dates_and_times():
     conn = sqlite3.connect('cars.db')
@@ -431,15 +550,33 @@ def update_user_telegram_id(phone, telegram_id):
     conn.commit()
     conn.close()
 
-def send_time_selection(call):
-    markup = InlineKeyboardMarkup(row_width=3)
-    for hour in range(10, 19):  # 10:00 - 18:00
+def sending_time_selection(chat_id, service, car_id, date_str):
+    print(1)
+    # Получаем занятые времена из базы
+    with sqlite3.connect('cars.db', timeout=10) as conn:
+        c = conn.cursor()
+        c.execute(
+            "SELECT time FROM repair_bookings WHERE date=? AND status='confirmed'",
+            (date_str,)
+        )
+        booked_times = [row[0] for row in c.fetchall()]
+        print(booked_times)
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    for hour in range(10, 19):  # с 10:00 до 18:00 включительно
         time_str = f"{hour:02d}:00"
-        markup.add(InlineKeyboardButton(time_str, callback_data=f"select_time:{time_str}"))
+        if time_str in booked_times:
+            # Кнопка забронированного времени, помечена и неактивна
+            btn = types.InlineKeyboardButton(f"⛔ {time_str}", callback_data="busy")
+        else:
+            # Свободное время — callback_data с выбором времени
+            btn = types.InlineKeyboardButton(time_str,
+                                             callback_data = f"chosen_time_{service}_{car_id}_{date_str}_{time_str}")
+        markup.add(btn)
 
-    markup.add(InlineKeyboardButton("📌 По усмотрению админа", callback_data="custom_datetime_time"))
+    bot.send_message(chat_id, "⏰ Выберите время встречи:", reply_markup=markup)
 
-    bot.send_message(call.message.chat.id, "⏰ Выберите время встречи:", reply_markup=markup)
+    # Возвращаем True, если есть свободные слоты, иначе False
+    return any(time_str not in booked_times for time_str in [f"{hour:02d}:00" for hour in range(10, 19)])
 
 
 def add_rental_history(user_id, car_id, rent_start, rent_end, price):
@@ -483,23 +620,6 @@ MONTH_NAMES_RU_GEN = [
     "января", "февраля", "марта", "апреля", "мая", "июня",
     "июля", "августа", "сентября", "октября", "ноября", "декабря"
 ]
-
-def create_calendar_markup():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
-    today = datetime.today()
-    calendar_buttons = []
-
-    for i in range(30):
-        day = today + timedelta(days=i)
-        day_num = day.day
-        month_name = MONTH_NAMES_RU_GEN[day.month - 1]
-        button_text = f"{day_num} {month_name}"
-        calendar_buttons.append(types.KeyboardButton(button_text))
-
-    for i in range(0, len(calendar_buttons), 3):
-        markup.row(*calendar_buttons[i:i + 3])
-
-    return markup
 
 
 def create_rent_end_markup(start_date_str: str):
@@ -556,14 +676,165 @@ def add_user_to_db(phone_number, telegram_id=None, name=None):
 
 ADMIN_STATE = {}
 session = {}
-@bot.message_handler(commands=['check_delivery'])
-def check_delivery_command(message):
-    if message.from_user.id != DAN_ID:
-        bot.send_message(message.chat.id, "⛔ У вас нет доступа к этой команде.")
+
+def send_long_message(chat_id, text, chunk_size=4000):
+    for i in range(0, len(text), chunk_size):
+        bot.send_message(chat_id, text[i:i+chunk_size])
+
+
+@bot.message_handler(commands=['history'])
+def show_history(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM history ORDER BY 'Дата' DESC LIMIT 100")  # например, 100 записей
+        rows = cur.fetchall()
+
+    if not rows:
+        return bot.send_message(message.chat.id, "История пуста.")
+
+    text = "📜 История заправок:\n\n"
+    for row in rows:
+        text += (f"📅 {row['Дата']}\n"
+                 f"🏪 {STATION_CODES_TO_ADDRESSES.get(row['Адрес'], row['Адрес'])}\n"
+                 f"⛽ {row['Топливо']} — {row['Литры']} л\n"
+                 f"💰 {row['Рубли']} руб\n"
+                 f"💳 {row['Оплата']}\n"
+                 f"👤 ID: {row['Telegram_ID']}\n\n")
+
+    send_long_message(message.chat.id, text)
+
+@bot.message_handler(commands=['raw_rental_history'])
+def show_raw_rental_history(message):
+    import sqlite3
+    if message.from_user.id not in ADMIN_IDS:
+        return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
+
+    try:
+        conn = sqlite3.connect('cars.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM rental_history ORDER BY id DESC")
+        rows = cursor.fetchall()
+
+        if not rows:
+            bot.send_message(message.chat.id, "📋 Таблица rental_history пуста.")
+            return
+
+        for row in rows:
+            text = (
+                f"🧾 Аренда #{row['id']}\n"
+                f"👤 user_id: {row['user_id']}\n"
+                f"🚘 car_id: {row['car_id']}\n"
+                f"📅 rent_start: {row['rent_start']}\n"
+                f"📅 rent_end: {row['rent_end']}\n"
+                f"💰 price: {row['price']}\n"
+                f"status: {row['status']}\n"
+                f"end_time {row['end_time']}\n"
+                f"🚚 delivery_price: {row['delivery_price']}\n"
+                f"📍 delivery_address: {row['delivery_address']}"
+            )
+
+            bot.send_message(message.chat.id, text)
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
+    finally:
+        conn.close()
+
+@bot.message_handler(commands=['list_users'])
+def list_users_handler(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
+
+    conn = sqlite3.connect('cars.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT id, phone, name, full_name, birthday_date, telegram_id, 
+               driver_license_photo, passport_front_photo, passport_back_photo,
+               status, bonus
+        FROM users
+    ''')
+    users = cursor.fetchall()
+    conn.close()
+
+    if not users:
+        bot.reply_to(message, "Пользователей в базе нет.")
         return
 
-    bot.send_message(message.chat.id, "💳 Введите сумму доставки, которую вы получили на карту:")
-    ADMIN_STATE[message.chat.id] = 'waiting_for_delivery_amount'
+    text = "📋 Полный список пользователей:\n\n"
+    for user in users:
+        (
+            user_id, phone, name, full_name, birthday, telegram_id,
+            dl_photo, pass_front, pass_back, status, bonus
+        ) = user
+
+        text += (
+            f"🆔 ID: {user_id}\n"
+            f"📞 Телефон: +{phone}\n"
+            f"👤 Имя: {name or '—'}\n"
+            f" ФИО: {full_name}\n"
+            f"💬 Telegram ID: {telegram_id}\n"
+            f"📸 ВУ: {'✅' if dl_photo else '❌'}\n"
+            f"📄 Паспорт (лицо): {'✅' if pass_front else '❌'}\n"
+            f"📄 Паспорт (оборот): {'✅' if pass_back else '❌'}\n"
+            f"📌 Статус: {status or '—'}\n"
+            f"🎁 Бонусы: {bonus}\n"
+            f"----------------------\n"
+        )
+
+    # Ограничение по длине Telegram-сообщений
+    for chunk_start in range(0, len(text), 4000):
+        bot.send_message(message.chat.id, text[chunk_start:chunk_start + 4000])
+@bot.message_handler(commands=['show_bookings'])
+def show_bookings(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
+
+    try:
+        conn = sqlite3.connect('cars.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Сортировка по возрастанию ID
+        cursor.execute("SELECT * FROM bookings ORDER BY id ASC")
+        bookings = cursor.fetchall()
+
+        if not bookings:
+            bot.send_message(message.chat.id, "📋 Нет бронирований.")
+            return
+
+        def split_message(text, max_length=4000):
+            parts = []
+            while len(text) > max_length:
+                split_index = text.rfind('\n', 0, max_length)
+                if split_index == -1:
+                    split_index = max_length
+                parts.append(text[:split_index])
+                text = text[split_index:]
+            parts.append(text)
+            return parts
+
+        response = ""
+        for b in bookings:
+            response += (
+                f"ID: {b['id']}, Service: {b['service']}, Car ID: {b['car_id']}, "
+                f"User ID: {b['user_id']}, Date: {b['date']}, Time: {b['time']}, "
+                f"Status: {b['status']}, Deposit_status: {b['deposit_status']}\n"
+            )
+
+        for part in split_message(response):
+            bot.send_message(message.chat.id, part)
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка при получении бронирований: {e}")
+    finally:
+        conn.close()
+
 
 
 @bot.message_handler(func=lambda message: ADMIN_STATE.get(message.chat.id) == 'waiting_for_delivery_amount')
@@ -666,25 +937,32 @@ def handle_ask_buttons(call):
 
 
 def question_function(message):
+    import difflib
+    import re
     user_id = message.from_user.id
-    username = message.from_user.username or 'пользователь'
     raw_text = message.text.strip()
 
     if raw_text.startswith('/'):
         return
 
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row  # ← Добавь это
+    cur = conn.cursor()
+    cur.execute("SELECT name, phone FROM users WHERE telegram_id = ?", (user_id,))
+    user_info = cur.fetchone()
+    name = user_info["name"] if user_info else "Имя не указано"
+    phone = user_info["phone"] if user_info else "Телефон не указан"
+
     # Нормализация текста
     normalized_text = re.sub(r'\s+', ' ', raw_text).lower()
     normalized_text = re.sub(r'[^\w\s]', '', normalized_text)
 
-    # Игнорировать слишком короткие и бессмысленные фразы
     if len(normalized_text) < 3:
         bot.send_message(user_id, "Пожалуйста, задайте более конкретный вопрос.")
         return
 
-    # Проверка на схожесть
-    cursor.execute("SELECT id, user_id, question_text, answer_text, answered FROM questions")
-    all_questions = cursor.fetchall()
+    cur.execute("SELECT id, user_id, question_text, answer_text, answered FROM questions")
+    all_questions = cur.fetchall()
 
     threshold = 0.7
     for q_id, q_user_id, q_text, q_answer, q_answered in all_questions:
@@ -697,26 +975,25 @@ def question_function(message):
                 bot.send_message(user_id, f"✉ Похожий вопрос уже был, вот ответ:\n\n{q_answer}")
             else:
                 bot.send_message(user_id, "Похожий вопрос уже был, но на него пока нет ответа. Пожалуйста, подождите.")
-            return  # Ничего не сохраняем и не отправляем админу
+            return
 
-    # Новый вопрос — сохраняем и отправляем админу
-    cursor.execute('''
+    # Сохраняем новый вопрос
+    cur.execute('''
         INSERT INTO questions (user_id, username, question_text, answer_text, answered)
         VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, username, raw_text, None, False))
-    question_id = cursor.lastrowid
+    ''', (user_id, name, raw_text, None, False))
+    question_id = cur.lastrowid
     conn.commit()
+    conn.close()
 
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("Ответить", callback_data=f"answer_{question_id}_{user_id}"))
 
     bot.send_message(
         ADMIN_ID[0],
-        f"❓ Новый вопрос от @{username} (ID: {user_id}):\n{raw_text}",
+        f"❓ Новый вопрос от {name} ({phone}):\n{raw_text}",
         reply_markup=markup
     )
-
-    bot.send_message(user_id, "Ваш вопрос отправлен администратору. Ожидайте ответа.")
 @bot.callback_query_handler(func=lambda call: call.data.startswith("answer_"))
 def handle_answer_callback(call):
     if call.from_user.id not in ADMIN_ID:
@@ -759,8 +1036,69 @@ def process_admin_answer(message, question_id, user_id):
         bot.send_message(message.chat.id, "Ответ отправлен пользователю.")
 
 
+
+
+
+@bot.message_handler(commands=['set_status'])
+def set_status_command(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
+
+    import sqlite3
+    user_id = message.from_user.id
+    args = message.text.split()
+
+    if len(args) != 2:
+        return bot.send_message(message.chat.id, "Использование: /set_status <status>")
+
+    new_status = args[1].strip().lower()
+
+    with sqlite3.connect('cars.db') as conn:
+        cursor = conn.cursor()
+
+        # Обновляем статус
+        cursor.execute("UPDATE users SET status = ? WHERE telegram_id = ?", (new_status, user_id))
+
+        # Если статус 'new' — удаляем бронирования и историю аренды
+        if new_status == "new":
+            cursor.execute("DELETE FROM bookings WHERE user_id = ?", (user_id,))
+            cursor.execute("DELETE FROM rental_history WHERE user_id = ?", (user_id,))
+
+        conn.commit()
+
+    if new_status == "new":
+        bot.send_message(message.chat.id, f"✅ Ваш статус обновлён на: {new_status}\n🗑 Все ваши бронирования и история аренды удалены.")
+    else:
+        bot.send_message(message.chat.id, f"✅ Ваш статус обновлён на: {new_status}")
+
+@bot.message_handler(commands=['set_status'])
+def set_status_command(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
+
+    user_id = message.from_user.id
+    args = message.text.split()
+
+    if len(args) != 2:
+        return bot.send_message(message.chat.id, "Использование: /set_status <status>")
+
+    new_status = args[1]
+
+    conn = sqlite3.connect('cars.db')
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET status = ? WHERE telegram_id = ?", (new_status, user_id))
+    conn.commit()
+    conn.close()
+
+    bot.send_message(message.chat.id, f"✅ Ваш статус обновлён на: {new_status}")
+
+
+
 @bot.message_handler(commands=['list_cars'])
 def list_all_cars(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
+
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT car_id, brand_model, year, transmission, service, photo_url, is_available FROM cars")
@@ -805,6 +1143,14 @@ def parse_russian_date(text):
 @bot.message_handler(func=lambda message: get_state(message.chat.id) == "waiting_for_rental_start")
 def handle_date_selection(message):
     user_id = message.chat.id
+    text = message.text.strip().lower()
+
+    # Возможность отменить процесс
+    if text in ["отмена", "выход", "/cancel"]:
+        set_state(user_id, None)  # сбрасываем состояние
+        bot.send_message(user_id, "🚪 Вы вышли из выбора даты аренды.", reply_markup=types.ReplyKeyboardRemove())
+        return
+
     session = get_session(user_id)
     rent_start_raw = message.text.strip()
 
@@ -836,7 +1182,20 @@ def handle_rent_end_date(message):
     import sqlite3
 
     user_id = message.chat.id
+    text = message.text.strip().lower()
+
+    # Возможность отменить процесс
+    if text in ["отмена", "выход", "/cancel"]:
+        set_state(user_id, None)
+        bot.send_message(user_id, "🚪 Вы вышли из выбора даты аренды.", reply_markup=types.ReplyKeyboardRemove())
+        return
+
     session = get_session(user_id)
+
+    if text == "🔙 назад":
+        set_state(user_id, "waiting_for_rent_start")
+        bot.send_message(user_id, "📅 Выберите дату начала аренды ещё раз.")
+        return
 
     end_date_str = message.text.strip()
     start_date_str = session.get("rent_start")
@@ -848,116 +1207,290 @@ def handle_rent_end_date(message):
 
     parsed_end = parse_russian_date(end_date_str)
     if not parsed_end:
-        bot.send_message(user_id, "❌ Неверный формат даты. Пожалуйста, выберите дату, используя кнопки календаря.")
+        bot.send_message(user_id, "❌ Неверный формат даты. Пожалуйста, выберите дату или выйдите с помощью /cancel.")
         return
 
     try:
         rent_start = datetime.strptime(start_date_str, "%Y-%m-%d")
         rent_end = parsed_end.replace(year=rent_start.year)
 
-        days = (rent_end - rent_start).days
-        if days <= 0:
-            bot.send_message(user_id, "⛔ Дата окончания должна быть позже даты начала.")
+        # 🚫 Проверка: дата окончания не раньше и не совпадает с датой начала
+        if rent_end <= rent_start:
+            bot.send_message(
+                user_id,
+                "❌ Дата окончания аренды должна быть позже даты начала. "
+                "Пожалуйста, выберите корректную дату."
+            )
             return
 
         rent_start_str = rent_start.strftime("%Y-%m-%d")
         rent_end_str = rent_end.strftime("%Y-%m-%d")
+        # --- проверка свободной машины ---
+        with sqlite3.connect("cars.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT brand_model, year, service, price FROM cars WHERE car_id = ?", (car_id,))
+            car_info = cursor.fetchone()
+            if not car_info:
+                bot.send_message(user_id, "❌ Автомобиль не найден.")
+                return
+            brand_model, year, service, base_price = car_info
 
+            cursor.execute("""
+                SELECT car_id FROM cars
+                WHERE brand_model = ? AND year = ?
+            """, (brand_model, year))
+            candidate_cars = [row[0] for row in cursor.fetchall()]
 
-        # TODO: расчёт стоимости на основе TARIFFS
+            free_car_id = None
+            for cid in candidate_cars:
+                cursor.execute("""
+                    SELECT 1 FROM rental_history
+                    WHERE car_id = ?
+                    AND status = 'confirmed'
+                    AND (
+                        (? BETWEEN rent_start AND rent_end)
+                        OR (? BETWEEN rent_start AND rent_end)
+                        OR (rent_start BETWEEN ? AND ?)
+                        OR (rent_end BETWEEN ? AND ?)
+                    )
+                """, (cid, rent_start_str, rent_end_str, rent_start_str, rent_end_str, rent_start_str, rent_end_str))
+                if not cursor.fetchone():
+                    free_car_id = cid
+                    break
+
+        if not free_car_id:
+            bot.send_message(user_id, "🚫 Нет свободных машин этой модели и года на выбранные даты.")
+            return
+
+        days = (rent_end - rent_start).days
+        total_price = calculate_price(base_price, days)
+
+        session.update({
+            "car_id": free_car_id,
+            "rent_end": rent_end_str,
+            "rent_start": rent_start_str,
+            "days": days,
+            "price": total_price,
+            "car_model": brand_model,
+            "car_year": year,
+            "service": service,
+            "db_user_id": user_id
+        })
+
+        old_msg_id = session.get("last_calendar_msg_id")
+        if old_msg_id:
+            try:
+                bot.edit_message_reply_markup(chat_id=user_id, message_id=old_msg_id, reply_markup=None)
+            except telebot.apihelper.ApiTelegramException as e:
+                print(f"Не удалось удалить inline-кнопки: {e}")
+
+        bot.send_message(
+            user_id,
+            f"✅ Свободный {brand_model} ({year}) найден!\n"
+            f"📅 Аренда с {rent_start_str} по {rent_end_str}\n"
+            f"💰 Стоимость: {total_price} ₽ ({days} дн.)",
+            parse_mode="HTML",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        markup.add("Да", "Нет")
+        bot.send_message(user_id, "Все верно?", reply_markup=markup)
+
+        set_state(user_id, "waiting_for_delivery_choice")
 
     except Exception as e:
         bot.send_message(user_id, f"❌ Ошибка при обработке даты: {e}")
+def calculate_price(base_price, days):
+    if base_price is None:
+        raise ValueError("base_price не должен быть None")
 
-    TARIFFS = {
-        "Аренда": {
-            "Рено Логан": {2017: 1700, 2018: 1750, 2019: 1800, 2020: 1900, 2021: 1950},
-            "Фольцваген Поло": {2018: 2100, 2019: 2200},
-            "Шкода Рапид": {2016: 2000, 2018: 2100},
-            "Шкода Октавия": {2017: 2900, 2019: 2900, 2020: 3100},
-            "Джили Эмгранд": {2023: 2900}
-        },
-        "Прокат": {
-            "Рено Логан": {1: 2400, 7: 2300, 14: 2200, 30: 2100},
-            "Джили Эмгранд": {1: 3400, 7: 3300, 14: 3200, 30: 3100}
-        }
-    }
+    if days < 7:
+        per_day = base_price
+    elif 7 <= days < 14:
+        per_day = base_price - 100
+    elif 14 <= days < 21:
+        per_day = base_price - 200
+    elif 21 <= days < 28:
+        per_day = base_price - 300
+    else:
+        per_day = base_price - 400
 
-    def calculate_price(model, year, days, service):
-        service_lower = service.lower()
-        if service_lower in ["аренда", "rental"]:
-            price_per_day = TARIFFS.get("Аренда", {}).get(model, {}).get(year)
-            if not price_per_day:
-                price_per_day = 2000
-            return price_per_day * days
+    if per_day < 0:
+        per_day = 0
 
-        elif service_lower in ["прокат", "rental service"]:
-            tariffs = TARIFFS.get("Прокат", {}).get(model)
-            if not tariffs:
-                return 0
-            valid_keys = [k for k in tariffs if k <= days]
-            max_key = max(valid_keys) if valid_keys else min(tariffs)
-            base_price = tariffs[max_key]
-            return int(base_price * days / max_key)
+    return per_day * days
 
-        return 0
+def get_booked_dates(car_id: int) -> set:
+    """
+    Возвращает множество дат (YYYY-MM-DD), когда все машины этой модели и года заняты.
+    """
+    booked_dates = None  # будет пересечение занятых дат всех машин
 
-    # Получаем данные авто
     with sqlite3.connect("cars.db") as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT brand_model, year, service FROM cars WHERE car_id = ?", (car_id,))
-        car = cursor.fetchone()
 
-    if not car:
-        bot.send_message(user_id, "❌ Автомобиль не найден.")
+        # 1. Получаем модель и год выбранного автомобиля
+        cursor.execute("SELECT brand_model, year FROM cars WHERE car_id = ?", (car_id,))
+        car = cursor.fetchone()
+        if not car:
+            return set()
+        brand_model, year = car
+
+        # 2. Все car_id с той же моделью и годом
+        cursor.execute("SELECT car_id FROM cars WHERE brand_model = ? AND year = ?", (brand_model, year))
+        all_car_ids = [row[0] for row in cursor.fetchall()]
+
+        # 3. Получаем занятые даты каждой машины
+        for cid in all_car_ids:
+            cursor.execute("""
+                SELECT rent_start, rent_end FROM rental_history
+                WHERE car_id = ? AND status = 'confirmed'
+            """, (cid,))
+            rows = cursor.fetchall()
+
+            car_booked = set()
+            for start, end in rows:
+                start_date = datetime.strptime(start, "%Y-%m-%d")
+                end_date = datetime.strptime(end, "%Y-%m-%d")
+                current = start_date
+                while current <= end_date:
+                    car_booked.add(current.strftime('%Y-%m-%d'))
+                    current += timedelta(days=1)
+
+            # пересечение: оставляем только те даты, когда заняты все машины
+            if booked_dates is None:
+                booked_dates = car_booked
+            else:
+                booked_dates &= car_booked
+
+    return booked_dates if booked_dates else set()
+
+
+def create_calendar_markup(car_id=None):
+    """
+    Создает клавиатуру с календарем.
+    ❌ — полностью занятые и соседние с ними даты.
+    """
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
+    today = datetime.today()
+    calendar_buttons = []
+
+    booked = get_booked_dates(car_id) if car_id else set()
+    print("Занятые даты:", booked)
+
+    # Превращаем в set дат-объектов
+    booked_dates = {datetime.strptime(d, "%Y-%m-%d").date() for d in booked}
+
+    # Добавляем соседние даты
+    extended_booked = set(booked_dates)
+    for d in booked_dates:
+        extended_booked.add(d - timedelta(days=1))
+        extended_booked.add(d + timedelta(days=1))
+
+    # Показываем дни от вчера до +28 дней
+    for i in range(1, 31):
+        day = (today + timedelta(days=i)).date()
+        day_str = day.strftime('%Y-%m-%d')
+        day_num = day.day
+        month_name = MONTH_NAMES_RU_GEN[day.month - 1]
+
+        if day in extended_booked:
+            button_text = f"❌ {day_num} {month_name}"
+        else:
+            button_text = f"{day_num} {month_name}"
+
+        calendar_buttons.append(types.KeyboardButton(button_text))
+
+    # Расставляем кнопки по рядам
+    for i in range(0, len(calendar_buttons), 3):
+        markup.row(*calendar_buttons[i:i + 3])
+
+    return markup
+
+@bot.message_handler(commands=['set_new'])
+def set_user_status_new(message):
+    if message.from_user.id != ADMIN_ID2:
+        bot.reply_to(message, "⛔️ У вас нет доступа к этой команде.")
         return
 
-    model, year, service = car
+    try:
+        parts = message.text.strip().split()
+        if len(parts) != 2:
+            bot.reply_to(message, "⚠️ Использование: /set_new <telegram_id>")
+            return
 
-    # Приведение сервиса к русскому виду
-    service = {
-        "rental": "Аренда",
-        "rental service": "Прокат"
-    }.get(service.lower(), service)
+        telegram_id = int(parts[1])
 
-    price = calculate_price(model, year, days, service)
-    print(rent_end_str, rent_start_str, days, price, model, year, service, user_id)
-    # Сохраняем все важные данные в сессию
-    session["rent_end"] = rent_end_str
-    session["rent_start"] = rent_start_str
-    session["days"] = days
-    session["price"] = price
-    session["car_model"] = model
-    session["car_year"] = year
-    session["service"] = service
-    session["db_user_id"] = user_id
+        with sqlite3.connect("cars.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET status = 'waiting_car' WHERE telegram_id = ?", (telegram_id,))
+            conn.commit()
 
-    # Показываем пользователю информацию и запрашиваем подтверждение
-    bot.send_message(
-        user_id,
-        f"✅ Вы арендовали {model} ({year}) с {rent_start_str} по {rent_end_str}.\n"
-        f"📅 Дней: {days}\n💰 Стоимость: {price} ₽",
-        reply_markup=clear_keyboard()
-    )
+        bot.reply_to(message, f"✅ Статус пользователя {telegram_id} установлен как 'new'.")
 
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    markup.add("Да", "Нет")
-    bot.send_message(user_id, "Все верно?", reply_markup=markup)
+    except Exception as e:
+        print(f"[set_user_status_new] Ошибка: {e}")
+        bot.reply_to(message, "❌ Произошла ошибка при обновлении статуса.")
 
-    set_state(user_id, "waiting_for_delivery_choice")
+
+
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
-
+    print(user_id)
     conn = sqlite3.connect('cars.db')
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute("SELECT name, status FROM users WHERE telegram_id = ?", (user_id,))
     result = cursor.fetchone()
+
+    if user_id in OPERATORS_IDS:
+        # Определяем станцию по user_id
+        station_address = None
+        for addr, uid in STATION_OPERATORS.items():
+            if uid == user_id:
+                station_address = addr
+                break
+
+        if not station_address:
+            bot.send_message(message.chat.id, "Ошибка: станция не найдена для этого пользователя.")
+            return
+
+        # Находим код станции по адресу
+        station_code = next((code for code, addr in STATION_CODES_TO_ADDRESSES.items() if addr == station_address),
+                            None)
+        if not station_code:
+            bot.send_message(message.chat.id, "Ошибка: код станции не найден.")
+            return
+
+        # Получаем операторов по коду станции
+        cursor.execute("SELECT id, name, active FROM operators WHERE station=?", (station_code,))
+        operators = cursor.fetchall()
+
+        # Проверка активного оператора
+        active_operator = next((op for op in operators if op[2] == 1), None)
+
+        markup = types.InlineKeyboardMarkup()
+
+        if active_operator:
+            # Кнопка Завершить смену с callback_data с id оператора
+            markup.add(types.InlineKeyboardButton("Завершить смену", callback_data=f"end_shift:{active_operator[0]}"))
+            bot.send_message(
+                message.chat.id,
+                "Когда закончите смену, нажмите на кнопку ниже:",
+                reply_markup=markup
+            )
+        else:
+            # Кнопки с именами операторов
+            for op_id, name, _ in operators:
+                markup.add(types.InlineKeyboardButton(name, callback_data=f"operator_choose:{op_id}"))
+            bot.send_message(message.chat.id, "Выберите своё имя:", reply_markup=markup)
+        return
     conn.close()
-
     if result:
-        name, status = result
-
+        name, status = result["name"], result["status"]
+        print(status)
         if status == 'awaiting_use':
             start_use_kb = types.InlineKeyboardMarkup()
             start_use_kb.add(types.InlineKeyboardButton("🚀 Начать использование машины", callback_data="start_use"))
@@ -968,126 +1501,340 @@ def start(message):
         elif status == 'using_car':
             show_main_menu(message.chat.id)
 
-        else:
-            name = result[0]
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("🏠 Смотреть квартиры Тольятти", url="https://homereserve.ru/AACykQ"))
-            markup.add(InlineKeyboardButton("🚗 Машины Элит", callback_data="elite_cars"))
-            bot.send_message(message.chat.id, "Привет! Выберите действие:", reply_markup=markup)
 
-            # Здесь можно показать главное меню
-            return
+
+
+        elif status == 'waiting_car':
+
+            conn = sqlite3.connect("cars.db")
+
+            conn.row_factory = sqlite3.Row
+
+            cursor = conn.cursor()
+
+            # Берем последнюю запись из rental_history
+            print(user_id)
+            cursor.execute("""
+
+                SELECT rh.rent_start, b.service, b.deposit_status
+
+                FROM rental_history rh
+
+                JOIN bookings b ON rh.user_id = b.user_id AND rh.car_id = b.car_id
+
+                WHERE rh.user_id = ?
+
+                ORDER BY rh.id DESC LIMIT 1
+
+            """, (user_id,))
+
+            rental = cursor.fetchone()
+            # Берем последнюю бронировку
+            print(rental)
+            cursor.execute("""
+
+                SELECT id, docs_given, service, date
+
+                FROM bookings
+
+                WHERE user_id = ? AND status = 'confirmed'
+
+                ORDER BY id DESC LIMIT 1
+
+            """, (user_id,))
+
+            booking = cursor.fetchone()
+            print(booking)
+            conn.close()
+
+            if booking and booking["docs_given"]:
+                booking_id = booking["id"]
+                print(booking_id)
+                # Ключи уже выданы, сразу предлагаем продолжить осмотр
+
+                markup = types.InlineKeyboardMarkup()
+
+                markup.add(types.InlineKeyboardButton("➡️ Осмотр авто",
+
+                                                      callback_data=f"continue_inspection_{booking_id}_{user_id}"))
+
+                bot.send_message(message.chat.id,
+
+                                 f"📄 Копии договора уже выданы. Давайте продолжим процесс осмотра автомобиля.",
+
+                                 reply_markup=markup)
+
+                return
+
+            today = datetime.today().date()
+            if rental and rental["service"] == "rental":
+                print(1)
+                rent_start_date = datetime.strptime(rental["rent_start"], "%Y-%m-%d").date()
+
+                deposit_status = rental["deposit_status"]
+
+                if rent_start_date   == today  and deposit_status == "paid":
+                    reply_kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+
+                    reply_kb.add("💳 Оплатить онлайн", "ℹ️ Информация об аренде")
+
+                    bot.send_message(message.chat.id,
+
+                                     f"🚗 Привет, {name}! Ваша машина зарезервирована. Ожидаем дату начала аренды.",
+
+                                     reply_markup=reply_kb)
+
+
+
+                    return
+                else:
+
+                    reply_kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+
+                    reply_kb.add("ℹ️ Информация об аренде", "📍 Я на месте")
+
+                    reply_kb.add("❌ Отменить аренду")
+
+                    bot.send_message(message.chat.id,
+
+                                     f"🚗 Привет, {name}! Сегодня начинается ваша аренда. Выберите действие:",
+
+                                     reply_markup=reply_kb)
+
+
+
+            elif booking and booking["service"] == "rent":
+                print(5)
+                booking_date = datetime.strptime(booking["date"], "%Y-%m-%d").date()
+
+                rent_start_date = booking_date + timedelta(days=1)
+                print(rent_start_date)
+                #rent_start_date = booking_date
+                reply_kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+
+                if rent_start_date == today:
+
+                    reply_kb.add("ℹ️ Информация об аренде", "📍 Я на месте")
+
+                    bot.send_message(message.chat.id,
+
+                                     f"🚗 Привет, {name}! Сегодня вы можете забрать машину. Выберите действие:",
+
+                                     reply_markup=reply_kb)
+
+                else:
+
+                    reply_kb.add("💳 Оплатить онлайн", "ℹ️ Информация об аренде")
+
+                    bot.send_message(message.chat.id,
+
+                                     f"🚗 Привет, {name}! Ваша машина зарезервирована. Ожидаем дату начала аренды.",
+
+                                     reply_markup=reply_kb)
+
+                return
+        elif status == 'new':
+            markup = InlineKeyboardMarkup()
+            markup.add(
+                InlineKeyboardButton(
+                    "🏠 Бронировать квартиры Тольятти",
+                    url="https://homereserve.ru/AACykQ"
+                )
+            )
+            markup.add(InlineKeyboardButton("🚕 Заказать такси", callback_data="taxi"))
+            markup.add(InlineKeyboardButton("🏎 Аренда авто", callback_data="rent"))
+            markup.add(InlineKeyboardButton("⛽ Заправки", callback_data="gas"))
+            markup.add(InlineKeyboardButton("🔧 Ремонт авто", callback_data="rext"))
+            markup.add(InlineKeyboardButton("💼 Вакансии", callback_data="jobs"))
+            markup.add(types.InlineKeyboardButton("📩 Написать директору", url="https://t.me/Dagman42"))
+
+            bot.send_message(user_id, f"📋 Всё что вам нужно здесь    ", reply_markup=markup)
+        elif status == 'waiting_rental':
+            rental_menu_kb = InlineKeyboardMarkup()
+            rental_menu_kb.add(
+                InlineKeyboardButton("🚕 Заказать такси", callback_data="taxi"),
+                InlineKeyboardButton("🏎 Аренда", callback_data="rent"),
+            )
+            rental_menu_kb.add(
+                InlineKeyboardButton("⛽ Заправки", callback_data="gas"),
+                InlineKeyboardButton("🔧 Ремонт авто", callback_data="rext")
+            )
+            rental_menu_kb.add(
+                InlineKeyboardButton("💼 Вакансии", callback_data="jobs"),
+                types.InlineKeyboardButton("📩 Написать директору", url="https://t.me/Dagman42")
+            )
+            rental_menu_kb.add(
+                InlineKeyboardButton("🧾 Моя аренда", callback_data="my_rental")
+            )
+
+            bot.send_message(
+                message.chat.id,
+                f"🚗 Привет, {name}! Добро пожаловать в меню аренды.",
+                reply_markup=rental_menu_kb
+            )
+
+        else:
+            print('ошибка статуса')
+
 
     else:
+
         bot.send_message(
+
             user_id,
+
             "👋 <b>Добро пожаловать в официальный бот компании ЭЛИТ!</b>\n\n"
+
             "🚗 Здесь ты можешь арендовать авто и квартиру, заказать такси и многое другое.\n\n"
+
             "Для начала давай познакомимся.\n\n"
+
             "Как тебя зовут? 😊",
+
             parse_mode='HTML'
+
         )
+
         bot.register_next_step_handler(message, get_name)
 
-
+        return  # <-- вот этот return решает проблему!
 
 
 def get_name(message):
     chat_id = message.chat.id
-    user_data[chat_id] = {'name': message.text.strip()}
-    bot.send_message(chat_id, "А теперь введи свою фамилию, чтобы я мог получше тебя узнать:")
-    bot.register_next_step_handler(message, get_surname)
 
-def get_surname(message):
-    chat_id = message.chat.id
-    user_data[chat_id]['surname'] = message.text.strip()
-
-    markup = types.InlineKeyboardMarkup(row_width=3)
-    for code, name in months.items():
-        markup.add(types.InlineKeyboardButton(name, callback_data=f"month_{code}"))
-    bot.send_message(chat_id, "📅 Выбери месяц своего рождения:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("month_"))
-def select_month(call):
-    month = call.data.split("_")[1]
-    chat_id = call.message.chat.id
-
-    if chat_id not in user_data:
-        bot.send_message(chat_id, "❗ Данные не найдены. Пожалуйста, начни сначала: /start")
+    if not message.text or not message.text.strip():
+        bot.send_message(chat_id, "❌ Пожалуйста, отправь имя текстом.")
+        bot.register_next_step_handler(message, get_name)
         return
 
-    user_data[chat_id]['birth_month'] = month
+    user_data[chat_id] = {'name': message.text.strip()}
 
-    markup = types.InlineKeyboardMarkup(row_width=7)
-    row = []
+    # Запрос номера телефона
+    contact_markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+    contact_button = types.KeyboardButton(text="Отправить номер телефона", request_contact=True)
+    contact_markup.add(contact_button)
 
-    for day in range(1, 32):
-        day_str = f"{day:02}"
-        button = types.InlineKeyboardButton(day_str, callback_data=f"day_{day_str}")
-        row.append(button)
-        if len(row) == 7:
-            markup.row(*row)
-            row = []
+    bot.send_message(chat_id, "Пожалуйста, поделись своим номером телефона:", reply_markup=contact_markup)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("returning_deposit_booking_"))
+def handle_return_deposit(call):
+    try:
+        # Разбираем данные callback
+        parts = call.data[len("returning_deposit_booking_"):].split("_")
+        booking_id = int(parts[0])
+        user_id = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        print(booking_id, user_id)
+        # Вызываем cancel_booking безопасно
+        cancel1_booking(booking_id, user_id)
+        print(booking_id, user_id)
+        bot.answer_callback_query(call.id, "Вы начали процесс возврата залога")
 
-    if row:
-        markup.row(*row)
+    except Exception as e:
+        # Если user_id неизвестен, уведомляем админа или в лог
+        if user_id:
+            bot.send_message(user_id, f"❌ Ошибка при возврате залога: {e}")
+        else:
+            print(f"Ошибка при возврате залога для booking_id={booking_id}: {e}")
 
-    bot.edit_message_text("📆 А теперь выбери день:",
-                          chat_id,
-                          call.message.message_id,
-                          reply_markup=markup)
-@bot.callback_query_handler(func=lambda call: call.data.startswith("day_"))
-def select_day(call):
-    day = call.data.split("_")[1]
-    user_data[call.message.chat.id]['birth_day'] = day
+@bot.message_handler(func=lambda m: m.text == "❌ Отменить аренду")
+def handle_cancel_rent(msg):
+    chat_id = msg.chat.id
 
-    current_year = datetime.now().year
-    markup = types.InlineKeyboardMarkup(row_width=5)
-    for year in range(1950, current_year + 1):  # от 1901 до текущего года (включительно)
-        markup.add(types.InlineKeyboardButton(str(year), callback_data=f"year_{year}"))
-    bot.edit_message_text("📅 И наконец — выбери год рождения:", call.message.chat.id, call.message.message_id, reply_markup=markup)
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add("✅ Подтвердить отмену", "↩️ Назад")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("year_"))
-def select_year(call):
-    year = call.data.split("_")[1]
-    chat_id = call.message.chat.id
-    user_data[chat_id]['birth_year'] = year
-
-    name = user_data[chat_id]['name']
-    surname = user_data[chat_id]['surname']
-    b_day = user_data[chat_id]['birth_day']
-    b_month = user_data[chat_id]['birth_month']
-    b_year = user_data[chat_id]['birth_year']
-
-    text = (f"🎉 Спасибо, <b>{name} {surname}</b>!\n"
-            f"🎂 Мы запомнили твою дату рождения: <b>{b_day}.{b_month}.{b_year}</b>\n\n"
-            "Всё верно?")
-
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("Да ✅", callback_data="confirm_yes"),
-        types.InlineKeyboardButton("Нет ❌", callback_data="confirm_no")
+    bot.send_message(
+        chat_id,
+        "⚠️ <b>Вы уверены, что хотите отменить аренду?</b>\n\n"
+        "❗ При отмене в день начала аренды залог может быть возвращён не сразу или удержан частично, "
+        "в зависимости от условий бронирования.\n\n"
+        "Продолжить?",
+        reply_markup=markup,
+        parse_mode="HTML"
     )
 
-    bot.edit_message_text(text, chat_id, call.message.message_id, reply_markup=markup, parse_mode='HTML')
+@bot.message_handler(func=lambda m: m.text == "✅ Подтвердить отмену")
+def handle_confirm_cancel(msg):
+    chat_id = msg.chat.id
+    booking_id = get_last_booking_id(chat_id)
+    if booking_id is None:
+        bot.send_message(chat_id, "❌ Не найдено активной брони для отмены.")
+        return
+    cancel1_booking(booking_id, chat_id)
+
+def get_last_booking_id(user_id):
+    try:
+        with sqlite3.connect("cars.db") as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id FROM bookings WHERE user_id = ? AND status = 'confirmed' ORDER BY id DESC LIMIT 1",
+                (user_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return row["id"]
+            return None
+    except Exception as e:
+        bot.send_message(user_id, f"❌ Ошибка при получении брони: {e}")
+        return None
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_"))
-def confirm_handler(call):
-    chat_id = call.message.chat.id
 
-    if call.data == "confirm_yes":
-        # Запрос номера телефона
-        contact_markup = types.ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-        contact_button = types.KeyboardButton(text="Отправить номер телефона", request_contact=True)
-        contact_markup.add(contact_button)
-        bot.edit_message_text("Пожалуйста, поделись своим номером телефона для связи:", chat_id, call.message.message_id)
-        bot.send_message(chat_id, "Нажми кнопку ниже, чтобы отправить номер телефона:", reply_markup=contact_markup)
+def cancel1_booking(booking_id, user_id):
+    try:
+        with sqlite3.connect("cars.db") as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
 
-    elif call.data == "confirm_no":
-        # Начинаем заново (можно только имя или всё)
-        bot.edit_message_text("Давай попробуем ещё раз.\nКак тебя зовут?", chat_id, call.message.message_id)
-        bot.register_next_step_handler_by_chat_id(chat_id, get_name)
+            # Если user_id не передан, получаем его из брони
+            if user_id is None:
+                cursor.execute("SELECT user_id FROM bookings WHERE id = ?", (booking_id,))
+                row = cursor.fetchone()
+                if row is None:
+                    return
+                user_id = row["user_id"]
+
+            # Отменяем бронь
+            cursor.execute("UPDATE bookings SET status = 'reject' WHERE id = ?", (booking_id,))
+            conn.commit()
+
+            # Сбрасываем статус пользователя
+            cursor.execute("UPDATE users SET status = 'new' WHERE telegram_id = ?", (user_id,))
+            conn.commit()
+
+            # Получаем данные клиента
+            cursor.execute("SELECT name, phone FROM users WHERE telegram_id = ?", (user_id,))
+            user = cursor.fetchone()
+
+    except Exception as e:
+        bot.send_message(user_id, f"❌ Ошибка при отмене: {e}")
+        return
+
+    bot.send_message(user_id, "❌ Аренда отменена. Залог вернётся в течение суток.", reply_markup=types.ReplyKeyboardRemove())
+
+    if user:
+        name = user['name']
+        phone = user['phone']
+        admin_text = (
+            f"🚫 <b>Клиент отменил аренду</b>\n\n"
+            f"👤 Имя: <b>{name}</b>\n"
+            f"📞 Телефон: <b>{phone}</b>\n"
+            f"🧾 Telegram ID: <code>{user_id}</code>"
+        )
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("💸 Залог возвращён", callback_data=f"deposit_returned_{user_id}"))
+        bot.send_message(ADMIN_ID2, admin_text, parse_mode="HTML", reply_markup=markup)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("deposit_returned_"))
+def handle_deposit_returned(call):
+    client_id = int(call.data.split("_")[-1])
+
+    try:
+        bot.send_message(client_id, "✅ Ваш залог был возвращён!")
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    except Exception as e:
+        bot.send_message(call.message.chat.id, f"❌ Не удалось уведомить клиента: {e}")
+
 @bot.message_handler(content_types=['contact'])
 def contact_handler(message):
     chat_id = message.chat.id
@@ -1098,37 +1845,14 @@ def contact_handler(message):
         return
 
     name = user_data[chat_id]['name']
-    surname = user_data[chat_id]['surname']
-    b_day = int(user_data[chat_id]['birth_day'])
-    b_month = int(user_data[chat_id]['birth_month'])
-    b_year = int(user_data[chat_id]['birth_year'])
-
-    birth_date = datetime(b_year, b_month, b_day)
-    birth_date_str = birth_date.strftime('%Y-%m-%d')  # формат для хранения в базе
-    print(birth_date_str)
-    age = (datetime.now() - birth_date).days // 365  # простой расчет возраста в годах
-    if age < 18:
-        bot.send_message(chat_id, "🚫 Извините, наш сервис доступен только пользователям старше 18 лет.")
-        return
-
-    user_data[chat_id]['phone'] = phone
 
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
-        # Вставляем или игнорируем пользователя (чтобы гарантировать наличие записи)
         cursor.execute('''
             INSERT OR IGNORE INTO users (telegram_id, name, phone, status)
             VALUES (?, ?, ?, ?)
-        ''', (chat_id, f"{name} {surname}", phone, 'new'))
-
-        # Обновляем дату рождения (обновит только если запись есть)
-        cursor.execute('''
-            UPDATE users
-            SET birthday_date = ?
-            WHERE telegram_id = ?
-        ''', (birth_date_str, chat_id))
-
+        ''', (chat_id, name, phone, 'new'))
         conn.commit()
     except Exception as e:
         bot.send_message(chat_id, f"❗ Ошибка при сохранении данных: {e}")
@@ -1136,33 +1860,149 @@ def contact_handler(message):
     finally:
         conn.close()
 
-
     bot.send_message(
         chat_id,
-        f"📱 Спасибо за номер, <b>{name} {surname}</b>!\n"
-        f"Мы тебя запомнили: ДР {b_day}.{b_month}.{b_year}, Телефон: {phone}\n\n"
+        f"📱 Спасибо за номер, <b>{name}</b>!\n"
+        f"Телефон: {phone}\n\n"
         "Теперь ты готов пользоваться нашим сервисом — выбирай! 🚗",
         parse_mode='HTML',
         reply_markup=types.ReplyKeyboardRemove()
     )
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🏠 Смотреть квартиры Тольятти", url="https://yandex.ru/maps?whatshere%5Bpoint%5D=49.258310120938255%2C53.55394002594526&whatshere%5Bzoom%5D=12.109293&ll=49.25831012019384%2C53.553940026040266&z=12.109293&si=9w1gtgppfvdjfudny44z6dr2km"))
-    markup.add(InlineKeyboardButton("🚗 Машины Элит", callback_data="elite_cars"))
-    bot.send_message(chat_id, "Привет! Выберите действие:", reply_markup=markup)
 
-
-@bot.callback_query_handler(func=lambda call: call.data == "elite_cars")
-def handle_elite_menu(call):
+    # Единый список кнопок
     markup = InlineKeyboardMarkup()
+    markup.add(
+        InlineKeyboardButton(
+            "🏠 Смотреть квартиры Тольятти",
+            url="https://yandex.ru/maps?whatshere%5Bpoint%5D=49.258310120938255%2C53.55394002594526&whatshere%5Bzoom%5D=12.109293&ll=49.25831012019384%2C53.553940026040266&z=12.109293&si=9w1gtgppfvdjfudny44z6dr2km"
+        )
+    )
     markup.add(InlineKeyboardButton("🚕 Заказать такси", callback_data="taxi"))
-    markup.add(InlineKeyboardButton("🏎 Аренда/Прокат", callback_data="rent"))
+    markup.add(InlineKeyboardButton("🏎 Аренда", callback_data="rent"))
     markup.add(InlineKeyboardButton("⛽ Заправки", callback_data="gas"))
     markup.add(InlineKeyboardButton("🔧 Ремонт авто", callback_data="rext"))
     markup.add(InlineKeyboardButton("💼 Вакансии", callback_data="jobs"))
-    markup.add(InlineKeyboardButton("ℹ️ О нас", callback_data="about"))
+    markup.add(types.InlineKeyboardButton("📩 Написать директору", url="https://t.me/Dagman42"))
+
+    bot.send_message(chat_id, "📋 Выберите действие:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "elite_cars")
+def handle_elite_main_menu(call):
+    rental_menu_kb = InlineKeyboardMarkup()
+    rental_menu_kb.add(
+        InlineKeyboardButton("🚕 Заказать такси", callback_data="taxi"),
+        InlineKeyboardButton("🏎 Аренда", callback_data="rent")
+    )
+    rental_menu_kb.add(
+        InlineKeyboardButton("⛽ Заправки", callback_data="gas"),
+        InlineKeyboardButton("🔧 Ремонт авто", callback_data="rext")
+    )
+    rental_menu_kb.add(
+        InlineKeyboardButton("💼 Вакансии", callback_data="jobs"),
+        InlineKeyboardButton("ℹ️ О нас", callback_data="about")
+    )
+    rental_menu_kb.add(
+        InlineKeyboardButton("🧾 Моя аренда", callback_data="my_rental")
+    )
+
+    bot.send_message(call.message.chat.id, "Выберите категорию Машины Элит:", reply_markup=rental_menu_kb)
+
+@bot.callback_query_handler(func=lambda call: call.data == "my_rental")
+def handle_my_rental(call):
+    user_id = call.from_user.id
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        # 1️⃣ Проверяем длительную аренду
+        cur.execute("""
+            SELECT rh.rent_start, rh.rent_end, rh.car_id,
+                   c.brand_model, c.price
+            FROM rental_history rh
+            JOIN cars c ON rh.car_id = c.car_id
+            WHERE rh.user_id = ? AND rh.status = 'confirmed'
+            ORDER BY rh.id DESC LIMIT 1
+        """, (user_id,))
+        row = cur.fetchone()
+
+        if row:  # Есть rental
+            rent_start = datetime.strptime(row["rent_start"], "%Y-%m-%d").date()
+            rent_end = datetime.strptime(row["rent_end"], "%Y-%m-%d").date()
+            base_price = row["price"]
+
+            days = (rent_end - rent_start).days
+            total_price = calculate_price(base_price, days)
+
+            text = (
+                f"🚗 <b>Ваша аренда:</b>\n\n"
+                f"📅 Срок: с {rent_start.strftime('%d.%m.%Y')} по {rent_end.strftime('%d.%m.%Y')} ({days} дней)\n"
+                f"💰 Стоимость аренды: <b>{total_price:,} ₽</b>\n"
+                f"🔒 <b>Залог 10 000 ₽</b> (вернётся сразу после сдачи и проверки автомобиля)\n\n"
+                f"❓ Оплата арендной платы происходит в назначенную дату"
+            )
+            bot.send_message(call.message.chat.id, text, parse_mode="HTML")
+            return
+
+        # 2️⃣ Проверяем краткосрочную аренду (rent)
+        cur.execute("""
+            SELECT b.created_at, b.deposit_status, c.brand_model, c.year
+            FROM bookings b
+            JOIN cars c ON b.car_id = c.car_id
+            WHERE b.user_id = ?
+              AND b.service = 'rent'
+              AND b.status = 'confirmed'
+            ORDER BY b.id DESC LIMIT 1
+        """, (user_id,))
+        booking = cur.fetchone()
+
+        if booking:
+            created_date = datetime.strptime(booking["created_at"], "%Y-%m-%d %H:%M:%S").date()
+            rent_start_date = created_date + timedelta(days=1)  # аренда завтра
+            deposit_status = "Оплачен" if booking["deposit_status"] == "paid" else "Не оплачен"
+
+            text = (
+                f"🚗 <b>Ваша аренда:</b>\n\n"
+                f"🚘 {booking['brand_model']} ({booking['year']})\n"
+                f"💳 Залог: <b>{deposit_status}</b>\n"
+                f"📅 Начало аренды: {rent_start_date.strftime('%d.%m.%Y')} (завтра)\n\n"
+                f"Забрать автомобиль можно с 12:00."
+            )
+            bot.send_message(call.message.chat.id, text, parse_mode="HTML")
+            return
+
+        # 3️⃣ Если ничего нет
+        bot.send_message(call.message.chat.id, "🚫 У вас нет активной аренды.")
+
+        # markup = InlineKeyboardMarkup()
+        # markup.add(
+        #     InlineKeyboardButton("💳 Оплатить сейчас", callback_data="pay_now"),
+        #     InlineKeyboardButton("🕒 Оплатить на месте", callback_data="pay_on_spot")
+        # )
 
 
-    bot.send_message(call.message.chat.id, "Выберите категорию Машины Элит:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "pay_now")
+def handle_pay_now(call):
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        "💳 Отлично! Чтобы оплатить аренду онлайн, перейдите по ссылке ниже:\n\n"
+        "<a href='https://your-payment-link.com'>Перейти к оплате</a>\n\n"
+        "📸 После оплаты отправьте скриншот чека.",
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "pay_on_spot")
+def handle_pay_on_spot(call):
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        "🕒 Хорошо, аренду можно будет оплатить на месте в день начала проката.\n\n"
+        "📲 Мы заранее сообщим, когда и куда подъехать."
+    )
 
 
 @bot.message_handler(commands=['clear_all_user'])
@@ -1198,7 +2038,7 @@ def handle_gas(call):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🎁 Баллы", callback_data="fuel_bonuses"))
     markup.add(InlineKeyboardButton("📍 Точки", callback_data="fuel_locations"))
-    markup.add(InlineKeyboardButton("⛽️ Заправиться", callback_data="fuel_get"))
+    markup.add(InlineKeyboardButton("⛽️ Заправиться", callback_data="choose_address"))
     bot.send_message(call.message.chat.id, "Выберите категорию Машины Элит:", reply_markup=markup)
 
 def reset_state(chat_id):
@@ -1247,14 +2087,6 @@ def handle_fuel(call):
         else:
             bot.send_message(chat_id, "❌ Не удалось получить информацию о баллах.")
 
-    elif data == "get":
-        reset_state(chat_id)
-        markup = InlineKeyboardMarkup()
-        markup.add(
-            #InlineKeyboardButton("📷 Сканировать QR", callback_data="start_scan"),
-            InlineKeyboardButton("📍 Выбрать адрес", callback_data="choose_address")
-        )
-        bot.send_message(chat_id, "Для начала нужен адрес", reply_markup=markup)
 
     elif data == "qr":
         cursor.execute("SELECT phone FROM users WHERE telegram_id = ?", (user_id,))
@@ -1271,7 +2103,8 @@ def handle_fuel(call):
         markup = InlineKeyboardMarkup()
         markup.add(
             InlineKeyboardButton("₽ Рубли", callback_data="amount_rub"),
-            InlineKeyboardButton("Литры", callback_data="amount_litres")
+            InlineKeyboardButton("Литры", callback_data="amount_litres"),
+        InlineKeyboardButton("Полный бак", callback_data="fulltank")
         )
         bot.edit_message_text("Введите сумму в рублях или литрах:", chat_id, call.message.message_id, reply_markup=markup)
 
@@ -1312,13 +2145,13 @@ def handle_start_choice(call):
 
     elif call.data == "choose_address":
         markup = InlineKeyboardMarkup()
-        markup.add(
-            InlineKeyboardButton("Южное шоссе 129", callback_data="station_1"),
-            InlineKeyboardButton("Южное шоссе 12/2", callback_data="station_2"),
-            InlineKeyboardButton("Лесная 66А", callback_data="station_3"),
-            InlineKeyboardButton("Борковская 72/1", callback_data="station_4")
-        )
-        msg = bot.send_message(chat_id, "Выберите адрес:", reply_markup=markup)
+        markup.add(InlineKeyboardButton("Южное шоссе 129 (около АвтоВАЗа)", callback_data="station_1"))
+        markup.add(InlineKeyboardButton("Южное шоссе 12/2 (пересечение с ул.Полякова)", callback_data="station_2"))
+        markup.add(InlineKeyboardButton("Лесная 66А (Центральный р-н)", callback_data="station_3"))
+        markup.add(InlineKeyboardButton("Борковская 72/1 (Восточное кольцо)", callback_data="station_4"))
+
+    bot.send_message(chat_id, "📍 Выберите адрес:", reply_markup=markup)
+
 
     user_sessions[chat_id] = user_sessions.get(chat_id, {})
     user_sessions[chat_id]['last_message_id'] = call.message.message_id
@@ -1386,22 +2219,56 @@ def handle_qr(message):
 def callback_handler(call):
     chat_id = call.message.chat.id
     data = call.data
-
+    try:
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None
+        )
+    except Exception as e:
+        print(f"[UI ERROR] Не удалось убрать кнопку: {e}")
     # Убедимся, что сессия для пользователя существует
     if chat_id not in user_sessions:
         user_sessions[chat_id] = {}
 
     # === Выбор станции ===
     if data.startswith("station_"):
-        user_sessions[chat_id]['station'] = data
+        station_code = data
+        user_sessions[chat_id]['station'] = station_code
 
+        # Проверка наличия активной смены
+        try:
+            with sqlite3.connect("cars.db") as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT 1 
+                    FROM shifts 
+                    WHERE station = ? AND active = 1
+                    LIMIT 1
+                """, (station_code,))
+                shift_exists = cursor.fetchone() is not None
+
+            if not shift_exists:
+                bot.answer_callback_query(call.id, "❌ На этой заправка через тг бота отключена. Платите напрямую оператору или попросите его включить тг бота.", show_alert=True)
+                return  # Выходим, не показываем выбор колонки
+
+        except Exception as e:
+            print(f"[DB ERROR] {e}")
+            bot.answer_callback_query(call.id, "⚠️ Ошибка при проверке смены.", show_alert=True)
+            return
+
+        # Если смена есть — показываем выбор колонки
         markup = InlineKeyboardMarkup()
         markup.add(
             InlineKeyboardButton("1", callback_data="column_1"),
             InlineKeyboardButton("2", callback_data="column_2")
         )
-        bot.edit_message_text("Выберите колонку:", chat_id, call.message.message_id, reply_markup=markup)
-
+        bot.edit_message_text(
+            "Выберите колонку:",
+            chat_id,
+            call.message.message_id,
+            reply_markup=markup
+        )
     # === Выбор колонки ===
     elif data.startswith("column_"):
         user_sessions[chat_id]['column'] = data.split("_")[1]
@@ -1413,7 +2280,8 @@ def callback_handler(call):
             markup = InlineKeyboardMarkup()
             markup.add(
                 InlineKeyboardButton("₽ Рубли", callback_data="amount_rub"),
-                InlineKeyboardButton("Литры", callback_data="amount_litres")
+                InlineKeyboardButton("Литры", callback_data="amount_litres"),
+                InlineKeyboardButton("Полный бак", callback_data="fulltank")
             )
             bot.edit_message_text("На этой станции доступен только газ.\nВыберите способ ввода:", chat_id, call.message.message_id, reply_markup=markup)
         else:
@@ -1423,12 +2291,64 @@ def callback_handler(call):
                 InlineKeyboardButton("Газ", callback_data="fuel_gaz")
             )
             bot.edit_message_text("Выберите тип топлива:", chat_id, call.message.message_id, reply_markup=markup)
+    elif data.startswith("full_tank_start_"):
+        client_chat_id = int(data.split("_")[-1])
+        # Запоминаем в сессии, что начата заправка полного бака
+        price_change_sessions[client_chat_id] = {
+            'status': 'started',
+            'operator_chat_id': chat_id
+        }
+        bot.edit_message_text("Заправка начата. Когда закончите, отправьте количество литров:",
+                              chat_id=chat_id,
+                              message_id=call.message.message_id)
 
+
+    elif data.startswith("pay_cash_full_") or data.startswith("pay_card_full_"):
+        client_chat_id = int(data.split("_")[-1])
+        payment_method = 'cash' if data.startswith("pay_cash_full_") else 'card'
+
+        session = user_sessions.get(client_chat_id, {})
+        litres = price_change_sessions.get(client_chat_id, {}).get('litres', 0)
+        fuel = session.get('fuel')
+        price = FUEL_PRICES.get(fuel, 0)
+        rub = round(litres * price, 2)
+
+        # Сохраняем оплату
+        user_sessions[client_chat_id]['amount'] = rub
+        user_sessions[client_chat_id]['litres'] = litres
+        user_sessions[client_chat_id]['payment_method'] = payment_method
+
+        bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id,
+                                      reply_markup=None)
+
+        bot.send_message(client_chat_id, f"Спасибо за оплату {'наличными' if payment_method == 'cash' else 'картой'}!")
+        # Здесь можно сохранить заказ в базу
+        save_to_db(client_chat_id)
+
+    elif data.startswith("full_tank_accepted_"):
+        client_chat_id = int(data.split("_")[-1])
+        operator_chat_id = call.message.chat.id
+
+        bot.edit_message_reply_markup(chat_id=operator_chat_id, message_id=call.message.message_id, reply_markup=None)
+
+        bot.send_message(operator_chat_id, "✅ Заказ принят оператором и завершён.")
+        bot.send_message(client_chat_id, "✅ Ваш заказ успешно подтверждён. Спасибо!")
+
+        # Очищаем сессии
+        user_sessions.pop(client_chat_id, None)
+        price_change_sessions.pop(client_chat_id, None)
     # === Подтверждение заказа админом ===
     elif data.startswith("accepted_"):
+        bot.answer_callback_query(call.id)  # ответим сразу
         client_chat_id = int(data.split("_")[1])
-        session = user_sessions.get(client_chat_id)
-        litres = session.get('litres', 0) if session else 0
+        session = user_sessions.get(client_chat_id, {}) or {}
+
+        # стараемся достать litres из сессии; если нет — 0
+        litres = session.get('litres', 0)
+        try:
+            litres = float(litres)
+        except Exception:
+            litres = 0.0
 
         earned, total = add_bonus(client_chat_id, litres)
 
@@ -1440,41 +2360,88 @@ def callback_handler(call):
         bot.send_message(call.message.chat.id, "✅ Заказ подтверждён и сохранён в системе.")
     elif data in ["amount_rub", "amount_litres"]:
         user_sessions[chat_id]['amount_type'] = 'rub' if data == 'amount_rub' else 'litres'
+
+        # Удалим кнопки
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None
+        )
+
         bot.send_message(chat_id, "Введите значение:")
 
     # === Выбор способа оплаты ===
     elif data in ["pay_cash", "pay_card"]:
+        # Удаляем кнопки
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
+
         user_sessions[chat_id]['payment_method'] = 'cash' if data == 'pay_cash' else 'card'
         finalize_order(chat_id)
-
-    # === Подтверждение заказа перед оплатой ===
     elif data == "confirm":
-        markup = InlineKeyboardMarkup()
-        markup.add(
-            InlineKeyboardButton("💵 Наличные", callback_data="pay_cash"),
-            InlineKeyboardButton("💳 Безнал (Tinkoff)", callback_data="pay_card")
-        )
-        bot.send_message(chat_id, "Выберите способ оплаты:", reply_markup=markup)
+        client_chat_id = chat_id
+        session = user_sessions.get(client_chat_id, {})
+        litres = session.get('litres', 0)
+        try:
+            litres = float(litres)
+        except:
+            litres = 0.0
+        fuel = session.get('fuel')
+        price = FUEL_PRICES.get(fuel, 0)
+        rub = round(litres * price, 2)
 
-    # === Отмена заказа ===
+        if client_chat_id not in price_change_sessions:
+            price_change_sessions[client_chat_id] = {}
+
+        price_change_sessions[client_chat_id]['litres'] = litres
+        price_change_sessions[client_chat_id]['status'] = 'litres_entered'
+
+        try:
+            with sqlite3.connect("cars.db") as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT bonus FROM users WHERE telegram_id = ?", (client_chat_id,))
+                row = cur.fetchone()
+                current_bonus = int(row[0]) if row and row[0] else 0
+        except Exception as e:
+            print(f"[bonus check] Ошибка: {e}")
+            current_bonus = 0
+
+        markup_client = InlineKeyboardMarkup()
+        markup_client.add(
+            InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"),
+            InlineKeyboardButton("💳 Карта", callback_data=f"payment_card_full_{client_chat_id}")
+        )
+
+        if current_bonus >= rub:
+            markup_client.add(
+                InlineKeyboardButton("🎁 Оплатить баллами", callback_data=f"paying_bonus_full_{client_chat_id}")
+            )
+
+        text_client = f"Выберите способ оплаты:\nСумма: {rub} ₽"
+        bot.send_message(client_chat_id, text_client, reply_markup=markup_client)
     elif data == "cancel":
+        # Удаляем кнопки
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
+
         reset_state(chat_id)
         bot.send_message(chat_id, "❌ Операция отменена.")
         choose_address_menu(chat_id)
 
 def choose_address_menu(chat_id):
     markup = InlineKeyboardMarkup()
-    markup.add(
-        InlineKeyboardButton("Южное шоссе 129", callback_data="station_1"),
-        InlineKeyboardButton("Южное шоссе 12/2", callback_data="station_2"),
-        InlineKeyboardButton("Лесная 66А", callback_data="station_3"),
-        InlineKeyboardButton("Борковская 72/1", callback_data="station_4")
-    )
+    markup.add(InlineKeyboardButton("Южное шоссе 129 (около АвтоВАЗа)", callback_data="station_1"))
+    markup.add(InlineKeyboardButton("Южное шоссе 12/2 (пересечение с ул.Полякова)", callback_data="station_2"))
+    markup.add(InlineKeyboardButton("Лесная 66А (Центральный р-н)", callback_data="station_3"))
+    markup.add(InlineKeyboardButton("Борковская 72/1 (Восточное кольцо)", callback_data="station_4"))
+
     bot.send_message(chat_id, "📍 Выберите адрес:", reply_markup=markup)
+
+
+
 @bot.message_handler(func=lambda m: (
     m.chat.id in user_sessions and
     user_sessions[m.chat.id].get('amount_type') and
-    user_sessions[m.chat.id].get('amount') is None
+    user_sessions[m.chat.id].get('amount') is None and
+    user_sessions[m.chat.id].get('amount_type') != 'fulltank'  # игнорируем полный бак здесь
 ))
 def amount_input_handler(msg):
     chat_id = msg.chat.id
@@ -1531,6 +2498,10 @@ def finalize_order(chat_id):
         reset_state(chat_id)
         return
 
+    if data.get('amount_type') == 'fulltank':
+        start_full_tank_procedure(chat_id)
+        return
+
     fuel_name = 'Бензин' if data['fuel'] == 'benzin' else 'Газ'
     price = FUEL_PRICES[data['fuel']]
 
@@ -1545,7 +2516,6 @@ def finalize_order(chat_id):
     station_name = STATION_NAMES.get(station_code, "Неизвестно")
     operator_id = OPERATORS.get(station_code)
 
-    # Сохраняем данные в сессии клиента (chat_id)
     user_sessions[chat_id].update({
         'rub': rub,
         'litres': litres,
@@ -1569,35 +2539,432 @@ def finalize_order(chat_id):
     else:
         bot.send_message(chat_id, f"💳 Ссылка на оплату (заглушка): https://pay.tinkoff.ru")
         bot.send_message(operator_id, message)
-        save_to_db(chat_id)  # Для безнала — сохраняем сразу
+        save_to_db(chat_id)
 
+def start_full_tank_procedure(chat_id):
+    data = user_sessions[chat_id]
+    station_code = data.get('station')
+    column = data.get('column')
+    fuel = data.get('fuel')
+    fuel_name = 'Бензин' if fuel == 'benzin' else 'Газ'
+    operator_id = OPERATORS.get(station_code)
 
-def add_bonus(chat_id, litres):
-    import sqlite3
-    conn = sqlite3.connect("cars.db")
-    cursor = conn.cursor()
+    text = (f"🚩 Новый заказ: Полный бак\n"
+            f"Станция: {STATION_NAMES.get(station_code, 'Неизвестно')}\n"
+            f"Колонка: {column}\n"
+            f"Топливо: {fuel_name}")
 
-    cursor.execute("SELECT bonus FROM users WHERE telegram_id = ?", (chat_id,))
-    result = cursor.fetchone()
-    current_bonus = int(result[0]) if result and result[0] else 0
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🚀 Начинаю заправку", callback_data=f"full_tank_start_{chat_id}"))
+
+    if operator_id:
+        bot.send_message(operator_id, text, reply_markup=markup)
+
+    bot.send_message(chat_id, "🕐 Оператор скоро начнет заправку. Пожалуйста, подождите.")
+
+def add_bonus(user_id, litres):
+    """Начисляет бонусы пользователю за литры топлива"""
+    bonus_to_add = math.ceil(litres)
+    if bonus_to_add <= 0:
+        return 0, 0
 
     try:
-        earned = int(litres)
-        new_bonus = current_bonus + earned
-        cursor.execute("UPDATE users SET bonus = ? WHERE telegram_id = ?", (new_bonus, chat_id))
-        conn.commit()
-        return earned, new_bonus  # Возвращаем начисленные и итого
+        with sqlite3.connect("cars.db") as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT bonus FROM users WHERE telegram_id = ?", (user_id,))
+            row = cur.fetchone()
+
+            if row is None:
+                # Если пользователя нет — создаём
+                cur.execute("INSERT INTO users (telegram_id, bonus) VALUES (?, ?)", (user_id, bonus_to_add))
+                conn.commit()
+                return bonus_to_add, bonus_to_add
+
+            current_bonus = int(row[0] or 0)
+            new_bonus = current_bonus + bonus_to_add
+            cur.execute("UPDATE users SET bonus = ? WHERE telegram_id = ?", (new_bonus, user_id))
+            conn.commit()
+            return bonus_to_add, new_bonus
+
     except Exception as e:
-        print("Ошибка при начислении бонусов:", e)
-        return 0, current_bonus
-    finally:
-        conn.close()
+        print(f"[add_bonus] Ошибка: {e}")
+        return 0, 0
 
 price_change_sessions = {}
 
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("full_tank_start_"))
+def handle_full_tank_start(call):
+    operator_chat_id = call.from_user.id
+    client_chat_id = int(call.data.split("_")[-1])
+
+    # Запоминаем, что оператор начал заправку для клиента
+    price_change_sessions[client_chat_id] = {
+        'status': 'started',
+        'operator_chat_id': operator_chat_id
+    }
+
+    try:
+        bot.edit_message_text(
+            "Заправка начата. Когда закончите, отправьте количество литров:",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id
+        )
+    except Exception as e:
+        print(f"Ошибка при редактировании сообщения: {e}")
+
+    bot.send_message(client_chat_id, "🚀 Оператор начал заправку вашего полного бака. Пожалуйста, дождитесь окончания.")
+    bot.answer_callback_query(call.id)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("fulltank"))
+def handle_fulltank_callback(call):
+    chat_id = call.from_user.id
+    # Удаляем кнопки у сообщения с кнопками выбора
+    try:
+        bot.edit_message_reply_markup(chat_id=call.message.chat.id,
+                                      message_id=call.message.message_id,
+                                      reply_markup=None)
+    except Exception as e:
+        print(f"Ошибка при удалении кнопок: {e}")
+
+    user_sessions[chat_id]['amount_type'] = 'fulltank'
+    start_full_tank_procedure(chat_id)
+
+
+
+
+@bot.message_handler(func=lambda m: any(
+    data.get('operator_chat_id') == m.chat.id and data.get('status') == 'started'
+    for data in price_change_sessions.values()
+))
+def handle_full_tank_litres_input(message):
+    operator_chat_id = message.chat.id
+
+    # Находим клиента
+    client_chat_id = None
+    for cid, data in price_change_sessions.items():
+        if data.get('operator_chat_id') == operator_chat_id and data.get('status') == 'started':
+            client_chat_id = cid
+            break
+
+    if client_chat_id is None:
+        bot.send_message(operator_chat_id, "❌ Не удалось определить клиента для этого заказа.")
+        return
+
+    try:
+        litres = float(message.text.replace(',', '.'))
+    except ValueError:
+        bot.send_message(operator_chat_id, "❌ Введите корректное число литров.")
+        return
+
+    # Обновляем сессию
+    price_change_sessions[client_chat_id]['litres'] = litres
+    price_change_sessions[client_chat_id]['status'] = 'litres_entered'
+
+    # Получаем данные
+    session = user_sessions.get(client_chat_id, {})
+    fuel = session.get('fuel')
+    price = FUEL_PRICES.get(fuel, 0)
+    rub = round(litres * price, 2)
+    fuel_name = 'Бензин' if fuel == 'benzin' else 'Газ'
+
+    # Отправляем клиенту сообщение с выбором оплаты
+    text_client = (
+        f"⛽ В ваш бак вошло {litres:.2f} л {fuel_name}.\n"
+        f"К оплате: {rub:.2f} ₽\n"
+        "Выберите способ оплаты:"
+    )
+    try:
+        with sqlite3.connect("cars.db") as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT bonus FROM users WHERE telegram_id = ?", (client_chat_id,))
+            row = cur.fetchone()
+            current_bonus = int(row[0]) if row and row[0] else 0
+    except Exception as e:
+        print(f"[bonus check] Ошибка: {e}")
+        current_bonus = 0
+
+    # Формируем кнопки
+    markup_client = InlineKeyboardMarkup()
+    markup_client.add(
+        InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"),
+        InlineKeyboardButton("💳 Карта", callback_data=f"payment_card_full_{client_chat_id}")
+    )
+
+    # Если хватает баллов на всю сумму
+    if current_bonus >= rub:
+        markup_client.add(
+            InlineKeyboardButton("🎁 Оплатить баллами", callback_data=f"paying_bonus_full_{client_chat_id}")
+        )
+    bot.send_message(client_chat_id, text_client, reply_markup=markup_client)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("paying_bonus_full_"))
+def handle_pay_bonus_full(call):
+    bot.answer_callback_query(call.id)
+    client_chat_id = int(call.data.split("_")[-1])
+    try:
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None
+        )
+    except Exception as e:
+        print(f"[UI ERROR] Не удалось убрать кнопку: {e}")
+    session = user_sessions.get(client_chat_id, {}) or {}
+    litres = price_change_sessions.get(client_chat_id, {}).get('litres', 0)
+    try:
+        litres = float(litres)
+    except Exception:
+        litres = 0.0
+
+    fuel = session.get('fuel')
+    rub = round(litres * FUEL_PRICES.get(fuel, 0), 2)
+    fuel_name = 'Бензин' if fuel == 'benzin' else 'Газ'
+
+    try:
+        with sqlite3.connect("cars.db") as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT bonus FROM users WHERE telegram_id = ?", (client_chat_id,))
+            row = cur.fetchone()
+            current_bonus = int(row[0]) if row and row[0] else 0
+
+            if current_bonus >= rub:
+                new_bonus = current_bonus - int(rub)
+                cur.execute("UPDATE users SET bonus = ? WHERE telegram_id = ?", (new_bonus, client_chat_id))
+                conn.commit()
+
+                bot.send_message(client_chat_id, f"✅ Оплата бонусами прошла успешно!\n💰 Остаток: {new_bonus} баллов.")
+
+                # Сохраняем метод оплаты в сессию
+                price_change_sessions[client_chat_id]['payment_method'] = "bonus"
+
+                # Запись в историю
+                cur.execute('''
+                    INSERT INTO history ("Адрес", "Топливо", "Рубли", "Литры", "Оплата", "Telegram_ID")
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    STATION_NAMES.get(session.get('station'), 'Неизвестно'),
+                    fuel_name,
+                    rub,
+                    litres,
+                    "🎁 Баллами",
+                    client_chat_id
+                ))
+                conn.commit()
+
+                # Оповещаем оператора
+                station_code = session.get('station')
+                station_address = STATION_CODES_TO_ADDRESSES.get(station_code)
+                operator_id = STATION_OPERATORS.get(station_address)
+                if operator_id:
+                    text_operator = (
+                        f"✅ Клиент оплатил бонусами.\n"
+                        f"Станция: {STATION_NAMES.get(session.get('station'), 'Неизвестно')}\n"
+                        f"Колонка: {session.get('column')}\n"
+                        f"Топливо: {fuel_name}\n"
+                        f"Литры: {litres:.2f}\n"
+                        f"Сумма (в баллах): {rub}"
+                    )
+                    markup_operator = InlineKeyboardMarkup()
+                    markup_operator.add(
+                        InlineKeyboardButton("✅ Заправил", callback_data=f"full_tank_accepted_{client_chat_id}")
+                    )
+                    bot.send_message(operator_id, text_operator, reply_markup=markup_operator)
+            else:
+                bot.send_message(client_chat_id, "❌ Недостаточно баллов для оплаты.")
+    except Exception as e:
+        print(f"[pay_bonus_full] Ошибка: {e}")
+        bot.send_message(client_chat_id, "❌ Произошла ошибка при оплате бонусами.")
+# --- Обработка выбора оплаты ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith("payment_"))
+def handle_payment_choice(call):
+    method = call.data.split("_")[1]  # cash или card
+    client_chat_id = int(call.data.split("_")[-1])
+    print(client_chat_id, method)
+    try:
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None
+        )
+    except Exception as e:
+        print(f"[UI ERROR] Не удалось убрать кнопку: {e}")
+    session = user_sessions.get(client_chat_id, {})
+    fuel = session.get('fuel')
+    fuel_name = 'Бензин' if fuel == 'benzin' else 'Газ'
+    litres = price_change_sessions[client_chat_id].get('litres')
+    price = FUEL_PRICES.get(fuel, 0)
+    rub = round(litres * price, 2)
+
+    price_change_sessions[client_chat_id]['payment_method'] = method
+
+    payment_info = "💵 Наличные" if method == "cash" else "💳 Карта"
+
+    station_code = session.get('station')
+    station_address = STATION_CODES_TO_ADDRESSES.get(station_code)
+    operator_chat_id = STATION_OPERATORS.get(station_address)
+
+    text_operator = (
+        f"✅ Клиент выбрал способ оплаты:\n"
+        f"Станция: {STATION_NAMES.get(station_code, 'Неизвестно')}\n"
+        f"Колонка: {session.get('column')}\n"
+        f"Топливо: {fuel_name}\n"
+        f"Литры: {litres:.2f}\n"
+        f"Сумма: {rub:.2f} ₽\n"
+        f"Способ оплаты: {payment_info}"
+    )
+    markup_operator = InlineKeyboardMarkup()
+    markup_operator.add(InlineKeyboardButton("✅ Принял", callback_data=f"full_tank_accepted_{client_chat_id}"))
+
+    if operator_chat_id is None:
+        print(f"Не найден оператор для станции {station_code}, сообщение не отправлено.")
+    else:
+        try:
+            bot.send_message(operator_chat_id, text_operator, reply_markup=markup_operator)
+        except telebot.apihelper.ApiTelegramException as e:
+            print(f"Ошибка отправки сообщения оператору {operator_chat_id}: {e}")
+
+    bot.answer_callback_query(call.id, f"Вы выбрали {payment_info}. Ожидайте заправку.")
+# --- Обработка нажатия "✅ Принял" ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith("full_tank_accepted_"))
+def handle_full_tank_accepted(call):
+    bot.answer_callback_query(call.id)
+
+    # Убираем кнопку у сообщения оператора
+    try:
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None
+        )
+    except Exception as e:
+        print(f"[UI ERROR] Не удалось убрать кнопку: {e}")
+    client_chat_id = int(call.data.split("_")[-1])
+    session = user_sessions.get(client_chat_id, {}) or {}
+    litres = price_change_sessions.get(client_chat_id, {}).get('litres', 0)
+
+    try:
+        litres = float(litres)
+    except Exception:
+        litres = 0.0
+
+    fuel = session.get('fuel')
+    rub = round(litres * FUEL_PRICES.get(fuel, 0), 2)
+    fuel_name = 'Бензин' if fuel == 'benzin' else 'Газ'
+
+    payment_method = price_change_sessions.get(client_chat_id, {}).get('payment_method')
+    if payment_method == "cash":
+        payment_info = "💵 Наличные"
+    elif payment_method == "card":
+        payment_info = "💳 Карта"
+    else:
+        payment_info = "🎁 Баллы"
+
+    earned, total = add_bonus(client_chat_id, litres)
+    if earned > 0:
+        bot.send_message(client_chat_id,
+                         f"✅ Операция прошла успешно!\n🎁 Вам начислено {earned} баллов.\n💰 Всего: {total} баллов.")
+    else:
+        bot.send_message(client_chat_id, f"✅ Операция прошла успешно!\nℹ️ Баллы не начислены (литры: {litres}).")
+    station_code = session.get('station')
+    station_address = STATION_CODES_TO_ADDRESSES.get(station_code)
+    operator_chat_id = STATION_OPERATORS.get(station_address)
+    bot.send_message(operator_chat_id, "✅ Отлично, заправка прошла успешно!")
+    try:
+        with sqlite3.connect("cars.db") as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+
+            # 1. Находим телефон клиента по telegram_id
+            cur.execute("SELECT phone FROM users WHERE telegram_id = ?", (client_chat_id,))
+            user_data = cur.fetchone()
+            client_phone = user_data["phone"] if user_data else None
+            print(session.get('station'))
+            # Вставляем в историю
+            cur.execute('''
+                INSERT INTO history ("Дата", "Адрес", "Топливо", "Рубли", "Литры", "Оплата", "Telegram_ID")
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                datetime.now().strftime("%Y-%m-%d %H:%M"),  # Дата
+                session.get('station'),  # Здесь лучше хранить station_code, а не адрес
+                fuel_name,
+                rub,
+                litres,
+                payment_info,
+                client_chat_id
+            ))
+
+            station_code = session.get('station')  # 'station_1', 'station_2', ...
+            if station_code:
+                # 2. Получаем активную смену по station_code
+                cur.execute("""
+                    SELECT operator_id 
+                    FROM shifts 
+                    WHERE station = ? AND active = 1
+                """, (station_code,))
+                shift_data = cur.fetchone()
+                print(shift_data)
+                if shift_data:
+                    operator_id = shift_data["operator_id"]
+
+                    print(operator_id)
+                    # 3. Получаем телефон и имя оператора
+                    cur.execute("SELECT name, phone FROM operators WHERE id = ?", (operator_id,))
+                    operator_info = cur.fetchone()
+
+                    if operator_info:
+                        operator_name = operator_info["name"]
+                        operator_phone = operator_info["phone"]
+                        print(operator_phone, client_phone)
+                        # 4. Сравниваем телефоны
+                        if client_phone and operator_phone and client_phone == operator_phone:
+                            bot.send_message(
+                                ADMIN_ID2,  # сюда ID админа
+                                f"⚠️ Внимание!\nОператор {operator_name} ({operator_phone}) "
+                                f"заправляется во время своей смены на станции {STATION_CODES_TO_ADDRESSES.get(station_code, station_code)}."
+                            )
+
+            # Обновление данных в shifts
+            if station_code:
+                if fuel == 'benzin':
+                    if payment_info == "🎁 Баллы":
+                        cur.execute("""
+                            UPDATE shifts
+                            SET gasoline_liters = COALESCE(gasoline_liters, 0) + ?,
+                                bonus_sum = COALESCE(bonus_sum, 0) + ?
+                            WHERE station = ? AND active = 1
+                        """, (litres, rub, station_code))
+                    else:
+                        cur.execute("""
+                            UPDATE shifts
+                            SET gasoline_liters = COALESCE(gasoline_liters, 0) + ?,
+                                sales_sum = COALESCE(sales_sum, 0) + ?
+                            WHERE station = ? AND active = 1
+                        """, (litres, rub, station_code))
+                else:
+                    if payment_info == "🎁 Баллы":
+                        cur.execute("""
+                            UPDATE shifts
+                            SET gas_liters = COALESCE(gas_liters, 0) + ?,
+                                bonus_sum = COALESCE(bonus_sum, 0) + ?
+                            WHERE station = ? AND active = 1
+                        """, (litres, rub, station_code))
+                    else:
+                        cur.execute("""
+                            UPDATE shifts
+                            SET gas_liters = COALESCE(gas_liters, 0) + ?,
+                                sales_sum = COALESCE(sales_sum, 0) + ?
+                            WHERE station = ? AND active = 1
+                        """, (litres, rub, station_code))
+
+            conn.commit()
+    except Exception as e:
+        print(f"[DB ERROR] {e}")
+
+    user_sessions.pop(client_chat_id, None)
+    price_change_sessions.pop(client_chat_id, None)
+
 @bot.message_handler(commands=['setprice'])
 def set_price_handler(message):
-    if message.chat.id != ADMIN_ID2:
+    if message.chat.id != DIRECTOR_ID:
         bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
         return
 
@@ -1689,46 +3056,32 @@ def save_to_db(chat_id):
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "rext")
-def show_repair_info(message):
+def show_repair_info(call):
     text = (
         "🚗 <b>Элит Рихтовка — Тольятти</b>\n"
-        "📍 ул. 40 лет Победы, 94Б\n"
-        "🕘 Пн–Пт 08:30–18:00\n"
-        "📞 +7 927 729‑…\n\n"
-        "✨ <b>Что делают:</b>\n"
-        "🔧 Рихтовка без следов\n"
-        "🎨 Покраска с подбором цвета\n"
-        "🧲 Вакуумная правка\n"
-        "🔩 Ремонт бамперов и кузова\n"
-        "💯 Гарантия, качество, честные цены\n\n"
-        "💬 <b>Отзывы:</b> ⭐ 5.0 — довольны все\n"
-        "📲 Есть WhatsApp и Telegram\n"
-        "🎁 Часто бонусы и скидки\n\n"
-        "Хочешь — найду прямые контакты или помогу записаться!"
+        "💡 Чтобы рассчитать стоимость ремонта — "
+        "опишите проблему и прикрепите фото повреждения 👇"
     )
 
+    bot.send_message(call.from_user.id, text, parse_mode="HTML")
 
-    kb = types.InlineKeyboardMarkup()
-    kb.add(
-        types.InlineKeyboardButton("📊 Цены", callback_data="repair_prices"),
-        types.InlineKeyboardButton("🎁 Скидки", callback_data="repair_discounts")
-    )
+    # Запоминаем, что ждём текст от клиента
+    session[call.from_user.id] = {"stage": "waiting_for_repair_text"}
 
-    bot.send_message(message.from_user.id, text, reply_markup=kb, parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda call: call.data == "taxi")
 def handle_taxi(call):
     bot.answer_callback_query(call.id)
 
-    app_link = "https://play.google.com/store/apps/details?id=com.taxi.app"  # вставь свою ссылку
-
+    app_link = "https://play.google.com/store/apps/details?id=com.taxsee.taxsee&pcampaignid=web_share"  # вставь свою ссылку
+    app_link = "https://play.google.com/store/apps/details?id=com.taxsee.elite&pcampaignid=web_share"
     markup = types.InlineKeyboardMarkup()
     button = types.InlineKeyboardButton("Скачать приложение", url=app_link)
     markup.add(button)
 
     bot.send_message(
         call.message.chat.id,
-        "🚕 Чтобы заказать такси, позвоните по номеру: +7 123 456 78 90\n"
+        "🚕 Чтобы заказать такси, позвоните по номеру: +78482999999\n"
         "Или скачайте наше приложение для быстрого заказа:",
         reply_markup=markup
     )
@@ -1767,8 +3120,10 @@ def handle_jobs(call):
 
     kb = types.InlineKeyboardMarkup()
     kb.add(
-        types.InlineKeyboardButton("🚕 Водитель такси", callback_data="job_taxi"),
-        types.InlineKeyboardButton("🚚 Водитель Газели", callback_data="job_gazel"),
+        types.InlineKeyboardButton("🚕 Водитель такси", callback_data="job_taxi"))
+    kb.add(
+        types.InlineKeyboardButton("🚚 Водитель Газели", callback_data="job_gazel"))
+    kb.add(
         types.InlineKeyboardButton("🎨 Маляр по авто", callback_data="job_painter")
     )
     bot.send_message(call.message.chat.id, "💼 Выберите вакансию:", reply_markup=kb)
@@ -1776,6 +3131,36 @@ def handle_jobs(call):
 from telebot import TeleBot, types
 from telebot.handler_backends import State, StatesGroup
 import pytesseract
+
+@bot.callback_query_handler(func=lambda call: call.data == "job_taxi")
+def handle_jobs(call):
+    bot.answer_callback_query(call.id)
+    bot.edit_message_reply_markup(chat_id=call.message.chat.id,
+                                  message_id=call.message.message_id,
+                                  reply_markup=None)
+    description = (
+        "🚖 <b>Вакансия: Водитель такси</b>\n\n"
+        "✅ <i>Преимущества:</i>\n"
+        "• Без диспетчерских комиссий\n"
+        "• Свободный график — работаешь когда хочешь\n"
+        "• Свой автопарк и мастерская: чинись и мойся бесплатно в любое время\n"
+        "• Сломалась машина? — Сразу выдадим другую\n"
+        "• Бесплатно 20 литров газа каждый день\n"
+        "• Соцпакет для водителей\n"
+        "• Деньги получаешь прямо от клиентов — без бухгалтерии\n"
+        "• <b>Нужен ИП</b>\n"
+        "• 💰 Заработок зависит только от тебя\n"
+    )
+
+    # Отправляем описание вакансии
+    bot.send_message(call.message.chat.id, description, parse_mode="HTML")
+
+    # Отдельным сообщением — кнопку отклика
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("✅ Продолжить", callback_data="target_taxi"))
+
+    bot.send_message(call.message.chat.id, "Если вас заинтересовало предложение:", reply_markup=kb)
+
 from PIL import Image
 import os
 
@@ -2093,7 +3478,9 @@ pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tessera
 def handle_job_painter(call):
     bot.answer_callback_query(call.id)
     user_id = call.from_user.id
-
+    bot.edit_message_reply_markup(chat_id=call.message.chat.id,
+                                  message_id=call.message.message_id,
+                                  reply_markup=None)
     description = (
         "🎨 <b>Вакансия: Маляр по покраске автомобилей</b>\n\n"
         "📍 <b>Локация:</b> [укажите адрес или город]\n"
@@ -2276,140 +3663,467 @@ def process_rental_time(message):
 
 
 
-@bot.callback_query_handler(func=lambda call: call.data in ["job_taxi", "job_gazel"])
+@bot.callback_query_handler(func=lambda call: call.data == "job_gazel")
 def handle_job_selection(call):
     user_id = call.from_user.id
-    job_title = "такси" if call.data == "job_taxi" else "газель"
-    car_id = "taxi_001" if job_title == "такси" else "gazel_001"
-
+    car_id = "gazel_001"
+    bot.edit_message_reply_markup(chat_id=call.message.chat.id,
+                                  message_id=call.message.message_id,
+                                  reply_markup=None)
     user_data[user_id] = {
-        "selected_job": job_title,
+        "selected_job": "газель",
         "car_id": car_id
     }
 
     description = (
-        "🚖 *Вакансия: Водитель такси*\n\n"
-        "✅ _Преимущества:_\n"
-        "• Без диспетчерских комиссий\n"
-        "• Свободный график — работаешь когда хочешь\n"
-        "• ...\n"
-        "• *Нужен ИП*\n"
-        "• 💰 Заработок зависит только от тебя\n"
-    ) if job_title == "такси" else (
         "🚚 *Вакансия: Водитель Газели*\n\n"
         "✅ _Преимущества:_\n"
         "• График работы обсуждается индивидуально\n"
-        "• ...\n"
+        "• Постоянные маршруты / стабильная загрузка\n"
+        "• Работа по городу и области\n"
         "• ЗП от 80 000 ₽\n"
+        "• Оформление по ИП или самозанятый\n"
     )
 
     bot.send_message(call.message.chat.id, description, parse_mode="Markdown")
-    bot.send_message(call.message.chat.id, "📸 Пожалуйста, отправьте фото водительского удостоверения.")
 
-    # FSM или собственное состояние
-    try:
-        bot.set_state(user_id, JobStates.waiting_for_license, call.message.chat.id)
-    except Exception as e:
-        print(f"[!] FSM ошибка set_state: {e}")
+    session = get_session(user_id)
+    session["state"] = "waiting_for_photo"
+    session["car_id"] = car_id
+    session["selected_service"] = "gazel"
 
-@bot.message_handler(content_types=['photo'])
-def handle_all_photos(message):
+    bot.send_message(user_id, "📸 Пожалуйста, отправьте фотографию водительского удостоверения.")
+    bot.answer_callback_query(call.id)
+
+def send_date_buttons(chat_id):
+    from datetime import datetime, timedelta
+    from telebot import types
+
+    today = datetime.today()
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    for i in range(7):
+        day = today + timedelta(days=i)
+        day_num = day.day
+        month_name = MONTH_NAMES_RU_GEN[day.month - 1]
+        date_str = f"{day_num} {month_name}"  # Например: "25 июля"
+        markup.add(types.KeyboardButton(date_str))
+    bot.send_message(chat_id, "📅 Выберите дату встречи:", reply_markup=markup)
+
+
+def check_photo_in_db(user_id, photo_column):
+    with sqlite3.connect("cars.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT {photo_column} FROM users WHERE telegram_id = ?", (user_id,))
+        row = cursor.fetchone()
+        return bool(row and row[0])
+orders = {}
+pending_photo_reply = {} # {master_message_id: client_user_id}
+
+ # {master_photo_msg_id: {"client_id": int, "photo": file_id}}
+
+@bot.message_handler(func=lambda m: session.get(m.from_user.id, {}).get("stage") == "waiting_for_repair_text", content_types=["text"])
+def handle_repair_description(message):
+    session[message.from_user.id]["description"] = message.text
+    session[message.from_user.id]["stage"] = "waiting_for_repair_photo"
+
+    bot.send_message(message.chat.id, "Спасибо! Теперь пришлите фото повреждения 📷")
+
+
+@bot.message_handler(func=lambda m: session.get(m.from_user.id, {}).get("stage") == "waiting_for_repair_photo", content_types=["photo"])
+def handle_repair_photo(message):
     user_id = message.from_user.id
-    state = get_state(user_id)
+    file_id = message.photo[-1].file_id
+    desc = session[user_id].get("description", "Без описания")
+
+    # Достаем из базы имя и телефон
+    try:
+        conn = sqlite3.connect("cars.db")
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT name, phone FROM users WHERE telegram_id = ?", (user_id,))
+        user_info = cur.fetchone()
+        if user_info:
+            name = user_info["name"]
+            phone = user_info["phone"]
+        else:
+            name = "Неизвестно"
+            phone = "Неизвестно"
+    finally:
+        conn.close()
+
+    # Сообщаем клиенту
+    bot.send_message(user_id, "Отлично 👍 Ваши данные отправлены мастеру, скоро свяжемся!")
+
+    # Отправляем мастеру с подсказкой и данными клиента
+    sent_msg = bot.send_photo(
+        MASTER_CHAT_ID,
+        file_id,
+        caption=(
+            f"🆕 Заявка от клиента {user_id}:\n"
+            f"Имя: {name}\n"
+            f"Телефон: {phone}\n"
+            f"Описание: {desc}\n\n"
+            "💡 Чтобы ответить клиенту — нажмите «Ответить» на это сообщение."
+        )
+    )
+
+    # Запоминаем заказ
+    orders[sent_msg.message_id] = {"client_id": user_id, "photo": file_id}
+
+    # Очищаем сессию клиента
+    session.pop(user_id, None)
+@bot.message_handler(func=lambda m: m.reply_to_message and m.reply_to_message.message_id in orders, content_types=["text"])
+def handle_master_reply(message):
+    order_info = orders[message.reply_to_message.message_id]
+    client_id = order_info["client_id"]
+    client_photo = order_info["photo"]
+
+    # Отправляем клиенту фото с ответом мастера
+    bot.send_photo(client_id, client_photo, caption=f"💬 Ответ мастера:\n{message.text}")
+
+    # Сообщаем мастеру, что отправлено
+    bot.send_message(message.chat.id, "✅ Ответ отправлен клиенту.")
+
+@bot.message_handler(
+    func=lambda m: get_session(m.from_user.id).get("state") in [
+        "waiting_for_photo",
+        "waiting_for_passport_front",
+        "waiting_for_passport_back",
+        "admin_add_car_photo",
+        "waiting_for_contract_photo",
+        "waiting_for_issue_photo",
+    ],
+    content_types=['photo']
+)
+def handle_photo_upload(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
     photo_id = message.photo[-1].file_id
+    session = get_session(user_id)
+    state = session.get("state")
 
-    # 🔹 1. Админ добавляет машину
-    if state == "admin_add_car_photo":
-        session = get_session(user_id)
-        session["photo"] = photo_id
+    def skip_step(photo_field, next_state, prompt_text):
+        if check_photo_in_db(user_id, photo_field):
+            set_state(user_id, next_state)
+            bot.send_message(chat_id, prompt_text)
+            return True
+        return False
 
-        with db_lock:
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute('''
-                INSERT INTO cars (brand_model, year, transmission, photo_url, service, is_available)
-                VALUES (?, ?, ?, ?, ?, 1)
+    if state == "waiting_for_photo":
+        if not skip_step("driver_license_photo", "waiting_for_passport_front", "📄 Теперь пришлите лицевую сторону паспорта."):
+            session["driver_license_photo"] = photo_id
+            set_state(user_id, "waiting_for_passport_front")
+            bot.send_message(chat_id, "📄 Теперь пришлите лицевую сторону паспорта.")
+        return
+
+    elif state == "waiting_for_passport_front":
+        if not skip_step("passport_front_photo", "waiting_for_passport_back", "📄 И теперь — обратную сторону паспорта."):
+            session["passport_front_photo"] = photo_id
+            set_state(user_id, "waiting_for_passport_back")
+            bot.send_message(chat_id, "📄 И теперь — обратную сторону паспорта.")
+        return
+
+    elif state == "waiting_for_passport_back":
+        if not check_photo_in_db(user_id, "passport_back_photo"):
+            session["passport_back_photo"] = photo_id
+
+        set_state(user_id, None)
+        bot.send_message(chat_id, "✅ Все документы получены.")
+
+        with sqlite3.connect("cars.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE users SET
+                    driver_license_photo = COALESCE(?, driver_license_photo),
+                    passport_front_photo = COALESCE(?, passport_front_photo),
+                    passport_back_photo = COALESCE(?, passport_back_photo)
+                WHERE telegram_id = ?
             ''', (
+                session.get("driver_license_photo"),
+                session.get("passport_front_photo"),
+                session.get("passport_back_photo"),
+                user_id
+            ))
+            conn.commit()
+
+        post_photo_processing(user_id, chat_id, session)
+        return
+
+    elif state == "admin_add_car_photo":
+        session["photo"] = photo_id
+        with db_lock:
+            conn = sqlite3.connect("cars.db")
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO cars (number, brand_model, year, transmission, photo_url, service, station)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                session.get("number"),
                 session.get("model"),
                 session.get("year"),
                 session.get("transmission"),
                 photo_id,
-                session.get("service")
+                session.get("service"),
+                session.get("station")
             ))
             conn.commit()
             conn.close()
 
-        # Подтверждение
-        text = (
-            f"<b>Модель:</b> {session.get('model')}\n"
-            f"<b>Год:</b> {session.get('year')}\n"
-            f"<b>Коробка:</b> {session.get('transmission')}\n"
-            f"<b>Тип услуги:</b> {session.get('service')}"
-        )
-        bot.send_message(user_id, f"✅ Машина добавлена:\n\n{text}", parse_mode="HTML")
+        bot.send_message(user_id, f"✅ Машина добавлена:\n\n"
+                                  f"<b>Номер:</b> {session.get('number')}\n"
+                                  f"<b>Модель:</b> {session.get('model')}\n"
+                                  f"<b>Год:</b> {session.get('year')}\n"
+                                  f"<b>Коробка:</b> {session.get('transmission')}\n"
+                                  f"<b>Тип услуги:</b> {session.get('service')}\n"
+                                  f"<b>Станция:</b> {session.get('station')}",
+                         parse_mode="HTML")
         bot.send_photo(user_id, photo_id)
         user_sessions.pop(user_id, None)
         clear_state(user_id)
         return
 
-    # 🔹 2. Добавление машины в другом потоке (add_car_flow)
-    if user_id in add_car_flow:
-        car_data = add_car_flow[user_id]
-        car_data['photo_url'] = photo_id
 
-        with db_lock:
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO cars (brand_model, year, transmission, photo_url, is_available)
-                VALUES (?, ?, ?, ?, 1)
-            """, (car_data['brand_model'], car_data['year'], car_data['transmission'], photo_id))
-            conn.commit()
-            conn.close()
+    elif state == "waiting_for_contract_photo":
 
-        bot.send_message(user_id, "✅ Машина успешно добавлена в базу!")
-        del add_car_flow[user_id]
-        return
-    session = get_session(user_id)
-    selected_job = user_data.get(user_id, {}).get("selected_job")
-    car_id = user_data.get(user_id, {}).get("car_id") or session.get("car_id")
+        file_id = message.photo[-1].file_id
 
-    with db_lock:
-        conn = get_db_connection()
+        booking_id = inspection_states.get(user_id, {}).get("booking_id", "❓")
+
+        conn = sqlite3.connect("cars.db")
+
         cur = conn.cursor()
 
-        # Сохраняем фото прав
-        cur.execute("UPDATE users SET driver_license_photo = ? WHERE telegram_id = ?", (photo_id, user_id))
-        conn.commit()
+        cur.execute("SELECT name, phone, passport_front_photo FROM users WHERE telegram_id = ?", (user_id,))
+
+        row = cur.fetchone()
+
         conn.close()
 
-    bot.send_message(message.chat.id, "✅ Фото удостоверения получено.")
+        name, phone, passport_photo_id = row if row else ("❓", "❓", None)
 
-    # 🔹 4. Переход к календарю
-    if selected_job:
-        if selected_job in ["такси", "газель"]:
-            show_user_calendar(message, None, user_id)
+        caption = (
 
-        elif selected_job in ["rent", "rental"]:
-            if not car_id:
-                bot.send_message(message.chat.id, "❌ Сначала выберите машину.")
-                return
+            f"📅 <b>Подписанный договор</b> от <b>{name}</b> (📞 {phone})\n"
 
-            service = session.get("service") or selected_job  # <- извлекаем тип услуги
+            f"Заявка: #{booking_id}\n\n"
+
+            f"Проверьте документы:"
+
+        )
+
+        bot.send_photo(ADMIN_ID2, file_id, caption=caption, parse_mode="HTML")
+
+        if passport_photo_id:
+            bot.send_photo(ADMIN_ID2, passport_photo_id, caption="🆔 Паспорт (лицевая сторона)")
+
+        markup = InlineKeyboardMarkup()
+
+        markup.add(
+
+            InlineKeyboardButton("✅ Всё правильно", callback_data=f"vverify_docs_ok_{user_id}"),
+
+            InlineKeyboardButton("❌ Неверно", callback_data=f"vverify_docs_wrong_{user_id}")
+
+        )
+
+        bot.send_message(ADMIN_ID2, "Проверьте документы и подтвердите:", reply_markup=markup)
+
+        session["state"] = None
+
+        user_contract_data[user_id]["awaiting_document"] = False
+
+        return
+    elif state == "waiting_for_issue_photo":
+        session["inspection_issue_photo"] = photo_id
+        session["state"] = None
+        issue_text = session.get("inspection_issue_text", "— описание отсутствует —")
+        with db_lock:
+            conn = sqlite3.connect("cars.db")
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT bookings.car_id, cars.brand_model, cars.number,
+                       users.name, users.phone
+                FROM bookings
+                JOIN cars ON bookings.car_id = cars.car_id
+                JOIN users ON bookings.user_id = users.telegram_id
+                WHERE bookings.user_id = ? AND bookings.status = 'confirmed'
+                ORDER BY bookings.id DESC LIMIT 1
+            """, (user_id,))
+            row = cursor.fetchone()
+            conn.close()
+        if row:
+            car_id, brand_model, number, user_name, user_phone = row
+            car_info = f"🚗 Машина: {brand_model} ({number})"
+            user_info = f"👤 Пользователь: {user_name or '—'}\n📞 Телефон: {user_phone or '—'}"
+        else:
+            car_info = "🚗 Машина: Неизвестная"
+            user_info = "👤 Пользователь: Неизвестен"
+        bot.send_message(ADMIN_ID2,
+                         f"🚨 Проблема при осмотре от пользователя {user_id}:\n\n"
+                         f"{user_info}\n"
+                         f"{car_info}\n\n"
+                         f"📝 Описание проблемы:\n{issue_text}")
+        bot.send_photo(ADMIN_ID2, photo_id)
+        bot.send_message(user_id, "✅ Спасибо! Проблема зафиксирована и передана администрации.")
+        return
+
+    session["state"] = "waiting_for_photo"
+    bot.send_message(chat_id, "📸 Пожалуйста, пришлите фото водительского удостоверения.")
+
+pending_fullnames = {}  # telegram_id: (car_id, service, user_id)
+
+def post_photo_processing(user_id, chat_id, session):
+    service = session.get("selected_service")
+    car_id = session.get("car_id")
+    print(car_id)
+    with sqlite3.connect("cars.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, full_name, phone FROM users WHERE telegram_id = ?", (user_id,))
+        user_row = cursor.fetchone()
+
+    if not user_row:
+        bot.send_message(chat_id, "❌ Ошибка: пользователь не найден в базе.")
+        return
+
+    if service == "gazel":
+        set_state(user_id, f"waiting_for_time_selection|gazel|{car_id}")
+        send_date_buttons(chat_id)
+        return
+
+
+    elif service in ["rent", "rental"]:
+
+        with sqlite3.connect("cars.db") as conn:
+
+            cursor = conn.cursor()
+
+            car = None
+            print(car_id)
+            if car_id:
+                cursor.execute("SELECT brand_model, year, station, price FROM cars WHERE car_id = ?", (car_id,))
+
+                car = cursor.fetchone()
+                if service == 'rent':
+
+                    cursor.execute("UPDATE cars SET is_available = 0 WHERE car_id = ?", (car_id,))
+
+                    conn.commit()
+
+            now = datetime.now()
+
+            date_str = now.strftime("%Y-%m-%d")
+
+            time_str = now.strftime("%H:%M")
+
+            rent_start, rent_end = None, None
 
             if service == "rental":
-                session["selected_car_id"] = car_id
-                session["state"] = "waiting_for_rental_start"
-                bot.send_message(message.chat.id, "Теперь выберите дату для бронирования:",
-                                 reply_markup=create_calendar_markup())
-                return
-            else:
-                show_user_calendar(message, car_id, user_id)
 
-        else:
-            show_user_calendar(message, car_id, user_id)
+                cursor.execute("""
+
+                        SELECT rent_start, rent_end FROM rental_history
+
+                        WHERE user_id = ? AND car_id = ?
+
+                        ORDER BY id DESC LIMIT 1
+
+                    """, (user_id, car_id))
+
+                rental_row = cursor.fetchone()
+
+                if rental_row:
+                    rent_start, rent_end = rental_row
+
+                    # date_str = rent_start or date_str
+
+            cursor.execute("""
+
+                    INSERT INTO bookings (user_id, car_id, service, status, date, time)
+
+                    VALUES (?, ?, ?, ?, ?, ?)
+
+                """, (user_id, car_id, service, 'pending', date_str, time_str))
+            print(user_id, car_id, service, 'pending', date_str, time_str)
+            conn.commit()
+
+        markup = types.InlineKeyboardMarkup()
+
+        markup.add(
+
+            types.InlineKeyboardButton("✅ Принять",
+                                       callback_data=f"carapprove_{service}_{car_id or 0}_{user_row[0]}_{user_id}"),
+
+            types.InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{car_id or 0}_{user_id}")
+
+        )
+
+        markup.add(
+
+            types.InlineKeyboardButton("📄 Показать документы", callback_data=f"show_documents_{user_id}")
+
+        )
+
+        service_display = {
+
+            "rent": "аренда",
+
+            "rental": "прокат"
+
+        }.get(service, service)
+
+        message_text = (
+
+            f"📥 Новая заявка:\n\n"
+
+            f"👤 Имя: {user_row[1] or '—'}\n"
+
+            f"📞 Телефон: {user_row[2] or '—'}\n"
+
+            f"🛠 Услуга: {service_display}"
+
+        )
+        if car:
+
+            message_text += f"\n🚗 Машина: {car[0]} ({car[1]})"
+
+            base_price = car[3]
+
+            if rent_start and rent_end and base_price:
+
+                # Расчёт количества дней
+
+                days = (datetime.strptime(rent_end, "%Y-%m-%d") - datetime.strptime(rent_start, "%Y-%m-%d")).days + 1
+                days = int(days) - 1
+                total_price = calculate_price(base_price, days)
+
+                message_text += f"\n💰 Итоговая цена: {total_price} ₽ за {days} дн."
+
+            elif base_price:
+
+                message_text += f"\n💰 Базовая цена: {base_price} ₽"
+
+            if car[2]:
+                message_text += f"\n📍 Станция: {car[2]}"
+
+        if rent_start and rent_end:
+            message_text += f"\n🗓 Срок аренды: с {format_date_russian(rent_start)} до {format_date_russian(rent_end)}"
+
+        bot.send_message(ADMIN_ID2, message_text, reply_markup=markup)
+
+        bot.send_message(user_id, "✅ Отлично! Мы уже отправили заявку админу. Ожидайте подтверждение.")
+
+        user_sessions.pop(user_id, None)
 
 
+    else:
+
+        show_user_calendar(None, car_id, user_id)
+
+admin_waiting_for_contract = {}  # {admin_id: {"user_id": ..., "callback_data": ..., "full_name": ...}}
+
+
+def format_date_russian(date_str):
+    return datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
 # @bot.message_handler(content_types=['photo'])
 # def handle_photo(message):
 #     user_id = message.from_user.id
@@ -2452,6 +4166,1606 @@ def handle_all_photos(message):
 #
 #     else:
 #         bot.send_message(message.chat.id, "⚠️ Фото не требуется для этой вакансии.")
+
+# --------------------- 1. ОБРАБОТКА CALLBACK "Одобрить" ---------------------
+def get_session(uid: int) -> dict:
+    if uid not in session:
+        session[uid] = {}
+    return session[uid]
+
+def set_session(uid: int, **kwargs):
+    session = get_session(uid)
+    session.update(kwargs)
+    return session
+
+# ===== Callback обработчик кнопки approve =====
+@bot.callback_query_handler(func=lambda call: call.data.startswith("carapprove_"))
+def process_carapprove(call):
+    try:
+        admin_id = call.from_user.id
+        parts = call.data[len("carapprove_"):].split("_")
+        if len(parts) != 4:
+            bot.answer_callback_query(call.id, "❌ Ошибка данных")
+            return
+
+        service, car_id_raw, client_telegram_str, client_user_str = parts
+        car_id = int(car_id_raw) if car_id_raw != "None" else 0
+        client_telegram_id = int(client_telegram_str)
+        client_user_id = int(client_user_str)
+
+        # Удаляем кнопки у клиента
+        try:
+            bot.edit_message_reply_markup(chat_id=client_telegram_id,
+                                          message_id=call.message.message_id,
+                                          reply_markup=None)
+        except Exception as e:
+            print(f"⚠️ Ошибка при удалении кнопок у клиента: {e}")
+
+        # Сохраняем сессию по админу
+        set_session(admin_id,
+                    state="waiting_fullname",
+                    client_telegram_id=client_telegram_id,
+                    client_user_id=client_user_id,
+                    car_id=car_id,
+                    service=service)
+
+        # Проверяем, есть ли ФИО в БД
+        with db_lock, sqlite3.connect("cars.db") as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT full_name FROM users WHERE id=?", (client_telegram_id,))
+            full_name_row = cur.fetchone()
+
+        if full_name_row and full_name_row[0] and full_name_row[0].strip():
+            full_name = full_name_row[0]
+            set_session(admin_id, state="waiting_contract", full_name=full_name)
+            bot.send_message(admin_id, f"📄 Пришлите файл договора аренды на имя: <b>{full_name}</b>", parse_mode="HTML")
+        else:
+            bot.send_message(admin_id, "📝 Пожалуйста, введите ФИО клиента:")
+
+    except Exception as e:
+        print(f"❌ Ошибка в process_carapprove: {e}")
+        bot.answer_callback_query(call.id, "❌ Ошибка при обработке заявки")
+
+
+# ===== Обработка ввода ФИО =====
+@bot.message_handler(func=lambda m: get_session(m.from_user.id).get("state") == "waiting_fullname")
+def handle_admin_fullname_input(message):
+    admin_id = message.from_user.id
+    try:
+        session = get_session(admin_id)
+        client_telegram_id = session.get("client_telegram_id")
+
+        if not client_telegram_id:
+            bot.send_message(admin_id, "⚠️ Ошибка: данные клиента не найдены. Начните процесс заново.")
+            return
+
+        full_name = message.text.strip()
+        if not full_name:
+            bot.send_message(admin_id, "⚠️ ФИО не может быть пустым. Попробуйте ещё раз.")
+            return
+
+        print(f"🔍 Обновляем ФИО: {full_name} для telegram_id={client_telegram_id!r}")
+
+        with db_lock, sqlite3.connect("cars.db") as conn:
+            cur = conn.cursor()
+            # Проверим, есть ли такой пользователь
+            cur.execute("SELECT 1 FROM users WHERE id=?", (client_telegram_id,))
+            if not cur.fetchone():
+                print("ℹ️ Пользователь не найден — создаём новую запись.")
+                cur.execute("INSERT INTO users (id, full_name) VALUES (?, ?)", (client_telegram_id, full_name))
+            else:
+                cur.execute("UPDATE users SET full_name=? WHERE id=?", (full_name, client_telegram_id))
+            conn.commit()
+
+        bot.send_message(admin_id, f"✅ ФИО клиента обновлено: {full_name}")
+        set_session(admin_id, state="waiting_contract", full_name=full_name)
+        bot.send_message(admin_id, f"📄 Пришлите файл договора аренды на имя: <b>{full_name}</b>", parse_mode="HTML")
+
+    except Exception as e:
+        print(f"❌ Ошибка в handle_admin_fullname_input: {e}")
+        bot.send_message(admin_id, f"❌ Произошла ошибка: {e}")
+
+@bot.message_handler(content_types=['document'])
+def handle_contract_file(message):
+    admin_id = message.from_user.id
+    session = get_session(admin_id)
+
+    client_user_id = session.get("client_user_id")
+    car_id = session.get("car_id")
+    service = session.get("service")
+
+    if not client_user_id or not car_id:
+        bot.send_message(admin_id, "⚠️ Не найдена информация о пользователе или машине в сессии. Повторите действие.")
+        return
+
+    file_id = message.document.file_id
+
+    try:
+        with db_lock, sqlite3.connect("cars.db") as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id FROM bookings
+                WHERE user_id = ? AND car_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+            """, (client_user_id, car_id))
+            row = cur.fetchone()
+
+            if not row:
+                bot.send_message(admin_id, "⚠️ Не найдено брони для этого клиента и машины.")
+                return
+
+            booking_id = row[0]
+            cur.execute("UPDATE bookings SET contract_file_id = ? WHERE id = ?", (file_id, booking_id))
+            conn.commit()
+
+        bot.send_message(admin_id, f"✅ Договор сохранён в базе bookings.")
+
+        # Продолжаем процесс утверждения
+        continue_carapprove_flow(service, car_id, client_user_id, admin_id)
+
+        # Очищаем сессию
+        clear_session(admin_id)
+
+    except Exception as e:
+        bot.send_message(admin_id, f"❌ Ошибка при сохранении договора: {e}")
+def continue_carapprove_flow(service, car_id, telegram_id, admin_id):
+    try:
+        print(telegram_id)
+        with db_lock, sqlite3.connect("cars.db") as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+
+            cur.execute("""
+                UPDATE rental_history
+                SET status = 'confirmed'
+                WHERE user_id = ? AND car_id = ?
+            """, (telegram_id, car_id))
+
+            cur.execute("UPDATE bookings SET status = 'confirmed' WHERE user_id = ? AND car_id = ? AND service = ?", (telegram_id, car_id, service))
+            cur.execute("UPDATE users SET status = 'waiting_car' WHERE telegram_id = ?", (telegram_id,))
+
+            cur.execute("SELECT brand_model, year, station FROM cars WHERE car_id = ?", (car_id,))
+            car = cur.fetchone()
+            conn.commit()
+
+        service_display = {"rent": "аренду", "rental": "прокат"}.get(service, service)
+        if car:
+            car_info = f"🚗 Машина: {car['brand_model']} ({car['year']})"
+            station_info = f"📍 Станция: {car['station']}" if car['station'] else "📍 Станция: уточняется"
+        else:
+            car_info = "🚗 Машина: неизвестна"
+            station_info = "📍 Станция: неизвестна"
+
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        markup.add("/start")  # кнопка, которая отправляет команду /start
+        bot.send_message(telegram_id, "Нажмите кнопку, чтобы вернуться в меню:", reply_markup=markup)
+
+        bot.send_message(
+            telegram_id,
+            f"✅ Ваша заявка на {service_display} одобрена!\n\n"
+            f"{car_info}\n"
+            f"{station_info}\n\n"
+            f"💰 Для закрепления автомобиля необходимо внести залог \n*10 000 ₽*.\n"
+            f"⏳ У вас есть *1 час*, чтобы\n"
+            f"внести залог *онлайн*.\n"
+            f"⚠️ *Если в течение часа залог не будет внесён — бронь аннулируется*,\n"
+            f"и автомобиль станет доступен другим клиентам.\n\n"
+            f"🔐 После внесения залога мы оформим страховку на автомобиль,\n"
+            f"и вы сможете забрать машину *завтра с 12:00*.\n\n"
+            f"💸 *Залог будет возвращён сразу после сдачи автомобиля*,\n"
+            f"как только механик завершит проверку состояния машины.\n\n"
+            f"🪪 Не забудьте взять с собой *паспорт (оригинал)*.",
+            parse_mode="Markdown"
+        )
+        # bot.send_message(
+        #     telegram_id,
+        #     f"✅ Ваша заявка на {service_display} одобрена!\n\n"
+        #     f"{car_info}\n"
+        #     f"{station_info}\n\n"
+        #     f"💰 Для закрепления автомобиля необходимо внести залог *10 000 ₽*.\n"
+        #     f"⏳ У вас есть *1 час*, чтобы:\n"
+        #     f"— внести залог *онлайн*, или\n"
+        #     f"— приехать на станцию и оплатить на месте *перед получением машины*.\n\n"
+        #     f"⚠️ *Если в течение часа залог не будет внесён — бронь аннулируется*,\n"
+        #     f"и автомобиль станет доступен другим клиентам.\n\n"
+        #     f"🔐 После внесения залога машина будет *закреплена за вами*, и вы сможете забрать её *в любое удобное время*.\n\n"
+        #     f"💸 *Залог будет возвращён сразу после сдачи автомобиля*,\n"
+        #     f"как только механик завершит проверку состояния машины.\n\n"
+        #     f"🪪 Не забудьте взять с собой *паспорт (оригинал)*.",
+        #     parse_mode="Markdown"
+        # )
+
+        bot.send_message(admin_id, "✅ Заявка полностью одобрена и клиенту отправлено уведомление.")
+
+    except Exception as e:
+        bot.send_message(admin_id, f"❌ Ошибка при завершении одобрения: {e}")
+
+# --------------------- 5. ОТПРАВКА ДОГОВОРА ОПЕРАТОРУ ---------------------
+def send_contract_to_operator(operator_id, telegram_id):
+    with db_lock, sqlite3.connect("cars.db") as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT contract_file_id
+            FROM rental_history
+            WHERE user_id = ?
+            ORDER BY id DESC LIMIT 1
+        """, (telegram_id,))
+        row = cur.fetchone()
+
+    if row and row[0]:
+        bot.send_document(operator_id, row[0])
+    else:
+        bot.send_message(operator_id, "❌ Договор для этого клиента не найден.")
+
+from telebot import types
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
+
+@bot.message_handler(func=lambda m: m.text in ["💳 Оплатить онлайн", "ℹ️ Информация об аренде", "📍 Я на месте"])
+def handle_waiting_car_actions(message):
+    user_id = message.from_user.id
+    text = message.text
+
+    # Проверка статуса пользователя
+    conn = sqlite3.connect("cars.db")
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT status FROM users WHERE telegram_id = ?", (user_id,))
+    user = cur.fetchone()
+    conn.close()
+
+    if user and user["status"] == "new":
+        # Удалить reply-кнопки (reply-клавиатуру)
+        bot.send_message(
+            message.chat.id,
+            "Привет! Выберите действие:",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+
+        # Показать Inline-кнопки
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton(
+                "🏠 Бронировать квартиры Тольятти",
+                url="https://homereserve.ru/AACykQ"
+            )
+        )
+        markup.add(InlineKeyboardButton("🚕 Заказать такси", callback_data="taxi"))
+        markup.add(InlineKeyboardButton("🏎 Аренда авто", callback_data="rent"))
+        markup.add(InlineKeyboardButton("⛽ Заправки", callback_data="gas"))
+        markup.add(InlineKeyboardButton("🔧 Ремонт авто", callback_data="rext"))
+        markup.add(InlineKeyboardButton("💼 Вакансии", callback_data="jobs"))
+        markup.add(types.InlineKeyboardButton("📩 Написать директору", url="https://t.me/Dagman42"))
+
+        bot.send_message(user_id, f"📋 Всё что вам нужно здесь    ", reply_markup=markup)
+        return  # Прекращаем обработку, ничего дальше не делаем
+    if user and user["status"] == "waiting_rental":
+        bot.send_message(
+            message.chat.id,
+            "Привет! Выберите действие:",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+        rental_menu_kb = InlineKeyboardMarkup()
+        rental_menu_kb.add(
+            InlineKeyboardButton("🚕 Заказать такси", callback_data="taxi"),
+            InlineKeyboardButton("🏎 Аренда", callback_data="rent"),
+        )
+        rental_menu_kb.add(
+            InlineKeyboardButton("⛽ Заправки", callback_data="gas"),
+            InlineKeyboardButton("🔧 Ремонт авто", callback_data="rext")
+        )
+        rental_menu_kb.add(
+            InlineKeyboardButton("💼 Вакансии", callback_data="jobs"),
+            types.InlineKeyboardButton("📩 Написать директору", url="https://t.me/Dagman42")
+        )
+        rental_menu_kb.add(
+            InlineKeyboardButton("🧾 Моя аренда", callback_data="my_rental")
+        )
+
+        bot.send_message(
+            message.chat.id,
+            f"🚗 Привет! Добро пожаловать в меню аренды.",
+            reply_markup=rental_menu_kb
+        )
+        return  # Прекращаем обработку, ничего дальше не делаем
+    if user and user["status"] == "using_car":
+        bot.send_message(
+            message.chat.id,
+            "Привет! Выберите действие:",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+        show_main_menu(message.chat.id)
+        return  # Прекращаем обработку, ничего дальше не делаем
+    # Если статус НЕ "new", продолжаем как раньше
+    if text == "💳 Оплатить онлайн":
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("✅ Я оплатил", callback_data=f"depositpaid_{user_id}"))
+
+        bot.send_message(
+            user_id,
+            "💳 *Реквизиты для залога (10 000 ₽):*\n\n"
+            "Получатель: Нугуманов Даниэль Радикович  \n"
+            "СБП / Телефон: +7 9297107180  \n"
+            "Карта МИР: 2200 7019 0981 4094  \n"
+            "Комментарий: залог за авто\n\n"
+            "❗ После перевода нажмите кнопку ниже.",
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
+
+    elif text == "ℹ️ Информация об аренде":
+
+        from datetime import datetime, timedelta
+
+
+
+        with db_lock:
+
+            conn = get_db_connection()
+
+            conn.row_factory = sqlite3.Row
+
+            cur = conn.cursor()
+
+            # Получаем последнюю подтверждённую бронь
+
+            cur.execute("""
+
+                    SELECT bookings.id AS booking_id, bookings.car_id,
+
+                           cars.brand_model, cars.year, cars.station, cars.price,
+
+                           bookings.date, bookings.time, bookings.deposit_status, bookings.service
+
+                    FROM bookings
+
+                    JOIN cars ON bookings.car_id = cars.car_id
+
+                    WHERE bookings.user_id = ? AND bookings.status = 'confirmed'
+
+                    ORDER BY bookings.id DESC LIMIT 1
+
+                """, (user_id,))
+
+            booking = cur.fetchone()
+
+            info = ""
+
+            if booking:
+
+                car_id = booking['car_id']
+
+                booking_id = booking['booking_id']
+
+                service = booking['service'].lower()
+
+                base_price = booking['price']
+
+                info += (
+
+                    f"🚗 <b>Машина:</b> {booking['brand_model']} ({booking['year']})\n"
+
+                    f"📍 <b>Станция:</b> {booking['station']}\n"
+
+                    f"🗓 <b>Дата бронирования:</b> {booking['date']} в {booking['time']}\n"
+
+                )
+
+                # Получаем сроки аренды
+                print(car_id)
+                cur.execute("""
+
+                        SELECT rent_start, rent_end
+
+                        FROM rental_history
+
+                        WHERE user_id = ? AND car_id = ?
+
+                        ORDER BY id DESC LIMIT 1
+
+                    """, (user_id, car_id))
+
+                rental = cur.fetchone()
+
+                if service == "rental":
+                    if rental and rental['rent_start'] and rental['rent_end']:
+                        rent_start = rental['rent_start']
+                        rent_end = rental['rent_end']
+                        info += f"🕒 <b>Срок аренды:</b> с {rent_start} до {rent_end}\n"
+
+                        try:
+                            start_date = datetime.strptime(rent_start, "%Y-%m-%d")
+                            end_date = datetime.strptime(rent_end, "%Y-%m-%d")
+                            total_days = (end_date - start_date).days
+                            if total_days < 1:
+                                total_days = 1
+
+                            total_price = calculate_price(base_price, total_days)
+                            per_day_price = int(total_price) / int(total_days)
+                            info += (
+                                f"💰 <b>Цена за день:</b> {per_day_price}₽\n"
+                                f"💵 <b>Итого за {total_days} дн.:</b> {total_price}₽\n"
+                            )
+                        except Exception as e:
+                            info += f"\n⚠️ Ошибка при расчёте цены: {e}"
+                    else:
+                        info += "❌ Ошибка: не найдены даты аренды.\n"
+                else:  # rent
+                    info += f"💰 <b>Цена за день:</b> {base_price}₽\n"
+
+                # Проверяем время действия брони
+
+                try:
+
+                    booking_time = datetime.strptime(f"{booking['date']} {booking['time']}", "%Y-%m-%d %H:%M")
+
+                    expire_time = booking_time + timedelta(minutes=60)
+
+                    now = datetime.now()
+
+                    deposit_status = booking['deposit_status'] or 'unpaid'
+
+                    if now < expire_time:
+
+                        if deposit_status != 'paid':
+
+                            minutes_left = int((expire_time - now).total_seconds() // 60)
+
+                            info += f"\n🔐 Ваша бронь действует ещё <b>{minutes_left} мин.</b>\n"
+
+                        else:
+
+                            info += "\n🚗 Подъезжайте на станцию и забирайте машину.\n"
+
+                    else:
+
+                        if deposit_status != 'paid':
+
+                            # Время вышло и залог не внесён — сбрасываем бронь
+
+                            cur.execute("UPDATE users SET status = 'new' WHERE telegram_id = ?", (user_id,))
+
+                            conn.commit()
+
+                            info += (
+
+                                "\n⛔ Время брони истекло, залог не был внесён.\n"
+
+                                "🚫 Машина снова доступна для других пользователей."
+
+                            )
+
+                        else:
+
+                            info += "\n✅ Время брони истекло, но залог внесён. Машина закреплена за вами.\n"
+
+                    # Показываем статус залога
+
+                    status_display = "внесён" if deposit_status == 'paid' else "не внесён"
+
+                    info += f"\n💳 <b>Залог:</b> {status_display}"
+
+
+                except Exception as e:
+
+                    info += f"\n❌ Ошибка при расчёте времени: {e}"
+
+            conn.close()
+
+        if booking:
+
+            bot.send_message(user_id, info, parse_mode="HTML")
+
+        else:
+
+            bot.send_message(user_id, "ℹ️ Не удалось найти информацию о бронированной машине.")
+
+
+
+
+
+
+
+
+    elif text == "📍 Я на месте":
+
+        from datetime import datetime, timedelta
+
+        with db_lock:
+
+            conn = get_db_connection()
+
+            conn.row_factory = sqlite3.Row
+
+            cur = conn.cursor()
+
+            # Получаем последнюю подтвержденную бронь
+
+            cur.execute("""
+
+                SELECT 
+
+                    bookings.id AS booking_id,
+
+                    bookings.car_id,
+
+                    bookings.deposit_status,
+
+                    bookings.status,
+
+                    bookings.service,
+
+                    cars.brand_model,
+
+                    cars.year,
+
+                    cars.station,
+
+                    cars.number,
+
+                    rh.sum_status,
+
+                    rh.price,
+
+                    rh.rent_start,
+
+                    rh.rent_end,
+                    
+                    users.full_name,
+
+                    bookings.contract_file_id
+
+                FROM bookings
+
+                LEFT JOIN rental_history rh 
+
+                    ON bookings.user_id = rh.user_id AND bookings.car_id = rh.car_id
+
+                JOIN cars ON bookings.car_id = cars.car_id
+                JOIN users ON bookings.user_id = users.telegram_id
+
+                WHERE bookings.user_id = ? AND bookings.status = 'confirmed'
+
+                ORDER BY bookings.id DESC
+
+                LIMIT 1
+
+            """, (user_id,))
+
+            booking = cur.fetchone()
+
+            if not booking:
+                bot.send_message(user_id, "❌ У вас нет активной брони.")
+
+                return
+
+            operator_id = STATION_OPERATORS.get(booking["station"])
+
+            # Отправляем договор оператору, если есть
+
+            contract_file_id = booking["contract_file_id"]
+
+            if operator_id and contract_file_id:
+                bot.send_message(operator_id, f"📄 Договор по машине {booking['brand_model']} для клиента {booking['full_name']}:")
+
+                bot.send_document(operator_id, contract_file_id)
+
+                # Достаём информацию
+
+                booking_id = booking["booking_id"]
+
+                car_id = booking["car_id"]
+
+                car_model = booking["brand_model"]
+
+                car_year = booking["year"]
+
+                car_station = booking["station"]
+
+                car_number = booking["number"]
+
+                deposit_status = booking["deposit_status"] or "unpaid"
+
+                sum_status = booking["sum_status"] or "unpaid"
+
+                service = booking["service"].lower()
+
+                contract_file_id = booking["contract_file_id"]
+                operator_id = STATION_OPERATORS.get(car_station)
+                print(operator_id)
+                price = booking["price"]
+
+                markup = InlineKeyboardMarkup()
+
+                if service in ("rental", "rent"):
+
+                    needs_deposit = deposit_status != "paid"
+
+                    needs_rent = (service == "rental" and sum_status != "paid")
+
+                    if not needs_deposit and not needs_rent:
+
+                        bot.send_message(
+
+                            user_id,
+
+                            f"✅ Отлично! Подойдите к стойке оператора на станции {car_station} для оформления документов.",
+
+                            reply_markup=types.ReplyKeyboardRemove()
+
+                        )
+
+                        if operator_id:
+                            with get_db_connection() as conn:
+                                cur = conn.cursor()
+
+                                cur.execute("UPDATE bookings SET docs_given = 1 WHERE id = ?", (booking_id,))
+
+                                conn.commit()
+
+                                cur.execute("SELECT full_name FROM users WHERE telegram_id = ?", (user_id,))
+
+                                row = cur.fetchone()
+
+                                full_name = row[0] if row else "клиента"
+
+                            markup = InlineKeyboardMarkup()
+
+                            markup.add(InlineKeyboardButton("➡️ Осмотр авто",
+
+                                                            callback_data=f"continue_inspection_{booking_id}_{user_id}"))
+
+                            bot.send_message(
+
+                                operator_id,
+
+                                f"📄 Заявка на машину:\n"
+
+                                f"ФИО: {full_name}\n"
+
+                                f"Марка: {car_model} ({car_year})\n"
+
+                                f"Госномер: {car_number}\n\n"
+
+                                f"🚗 Пожалуйста, откройте машину клиенту, чтобы он мог ознакомиться с договором.\n\n"
+
+                                f"❗ Важно: передача ключей происходит *только после* принятия копии договора.\n"
+
+                                f"Проверьте, указаны ли *даты и подписи* во всех необходимых местах.",
+
+                                parse_mode="Markdown",
+
+
+                            )
+
+                            bot.send_message(
+
+                                user_id,
+
+                                f"📄 Оператор открыл машину.\n\n"
+
+                                f"🚶 Сейчас подойдите к машине *{car_model}* *{car_number}*, чтобы ознакомиться с договором и осмотреть авто перед началом аренды.\n\n"
+
+                                f"🔓 От оператора вы получили две копии следующих документов:\n"
+
+                                f"• договор аренды\n"
+
+                                f"• соглашение о внесении залога\n"
+
+                                f"• приложение и обязательства арендатора\n\n"
+
+                                f"✍️ Поставьте дату и подпись на *обеих копиях* там, где это необходимо.\n\n"
+
+                                f"🧾 Один экземпляр оставьте в бардачке — он нужен для возможных проверок и подтверждения аренды.\n"
+
+                                f"📩 Второй экземпляр сдайте оператору, чтобы получить ключи от автомобиля.",
+
+                                parse_mode="Markdown",
+
+                                reply_markup=markup
+
+                            )
+
+                    else:
+
+                        # Пользователю
+
+                        payment_text = []
+
+                        if needs_deposit:
+                            payment_text.append("залог *10 000 ₽*")
+
+                        if needs_rent:
+                            payment_text.append(f"стоимость аренды *{int(price)} ₽*")
+
+                        bot.send_message(
+
+                            user_id,
+
+                            f"💬 Подойдите к стойке оператора на станции {car_station} и оплатите: " + " и ".join(
+                                payment_text) + "."
+
+                        )
+
+                        # Оператору
+
+                        if operator_id:
+
+                            with get_db_connection() as conn:
+
+                                cur = conn.cursor()
+
+                                cur.execute("SELECT full_name FROM users WHERE telegram_id = ?", (user_id,))
+
+                                row = cur.fetchone()
+
+                                full_name = row[0] if row else "клиента"
+
+                            operator_msg = (
+
+                                f"🚨 Заявка на машину:\n"
+
+                                f"Марка: {car_model} ({car_year})\n"
+
+                                f"Госномер: {car_number}\n"
+
+                                f"ФИО: {full_name}\n"
+
+                            )
+
+                            if service == "rent":
+
+                                if needs_deposit:
+
+                                    markup.add(InlineKeyboardButton("🔐 Залог 10.000 ₽ принят",
+
+                                                                    callback_data=f"deposit_paid_{booking_id}_{user_id}"))
+
+                                    operator_msg += "Статус: ❗ Залог не оплачен.\n"
+
+                                else:
+
+                                    operator_msg += "Статус: ✅ Залог оплачен.\n"
+
+
+                            elif service == "rental":
+
+                                if needs_deposit:
+
+                                    markup.add(InlineKeyboardButton("🔐 Залог 10.000 ₽ принят",
+
+                                                                    callback_data=f"deposit_paid_{booking_id}_{user_id}"))
+
+                                    operator_msg += "Статус: ❗ Залог не оплачен.\n"
+
+                                elif needs_rent:
+
+                                    markup.add(InlineKeyboardButton(f"💸 Аренда {int(price)} ₽ оплачена",
+
+                                                                    callback_data=f"rent_paid_{booking_id}_{user_id}"))
+
+                                    operator_msg += "Статус: ✅ Залог оплачен.\n"
+
+                                    operator_msg += f"💰 Аренда не оплачена — сумма {int(price)} ₽.\n"
+
+                                else:
+
+                                    # Всё оплачено: оформление договора
+
+                                    with get_db_connection() as conn:
+
+                                        cur = conn.cursor()
+
+                                        cur.execute("UPDATE bookings SET docs_given = 1 WHERE id = ?", (booking_id,))
+
+                                        conn.commit()
+
+                                    markup = InlineKeyboardMarkup()
+
+                                    markup.add(InlineKeyboardButton("➡️ Осмотр авто",
+
+                                                                    callback_data=f"continue_inspection_{booking_id}_{user_id}"))
+
+                                    bot.send_message(
+
+                                        user_id,
+
+                                        f"📄 Оператор открыл машину.\n\n"
+
+                                        f"🚶 Сейчас подойдите к машине *{car_model}* *{car_number}*, чтобы ознакомиться с договором и осмотреть авто перед началом аренды.\n\n"
+
+                                        f"🔓 От оператора вы получили две копии следующих документов:\n"
+
+                                        f"• договор аренды\n"
+
+                                        f"• соглашение о внесении залога\n"
+
+                                        f"• приложение и обязательства арендатора\n\n"
+
+                                        f"✍️ Поставьте дату и подпись на *обеих копиях* там, где это необходимо.\n\n"
+
+                                        f"🧾 Один экземпляр оставьте в бардачке — он нужен для возможных проверок и подтверждения аренды.\n"
+
+                                        f"📩 Второй экземпляр сдайте оператору, чтобы получить ключи от автомобиля.",
+
+                                        parse_mode="Markdown",
+
+                                        reply_markup=markup
+
+                                    )
+
+                                    operator_msg += (
+
+                                        f"\n📄 Все оплаты подтверждены.\n"
+
+                                        f"Выдайте клиенту договор на имя {full_name}\n"
+
+                                        f"🚗 Пожалуйста, откройте машину клиенту, чтобы он мог ознакомиться с договором.\n\n"
+
+                                        f"❗ Важно: передача ключей происходит *только после* принятия копии договора.\n"
+
+                                        f"Проверьте, указаны ли *даты и подписи* во всех необходимых местах."
+
+                                    )
+
+                            bot.send_message(operator_id, operator_msg, reply_markup=markup, parse_mode="Markdown")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("depositpaid_"))
+def handle_deposit_paid(call):
+    user_id = int(call.data.split("_")[-1])
+    bot.answer_callback_query(call.id, "Спасибо! Ожидайте подтверждения.")
+
+    full_name = "Неизвестно"
+    try:
+        with sqlite3.connect("cars.db") as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT full_name, phone FROM users WHERE telegram_id = ?", (user_id,))
+            row = cur.fetchone()
+            if row:
+                full_name = row["full_name"]
+                phone = row["phone"]
+    except Exception as e:
+        print(f"[handle_deposit_paid] Ошибка: {e}")
+    print(user_id)
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("✅ Залог пришел", callback_data=f"depositconfirm_{user_id}"))
+
+    operator_id = DAN_TELEGRAM_ID
+    bot.send_message(
+        operator_id,
+        f"💰 Пользователь *{full_name}*  {phone} сообщил об оплате залога.\n"
+        "Проверьте поступление средств.\n\n"
+        "Нажмите кнопку, когда подтвердите получение.",
+        parse_mode="Markdown",
+        reply_markup=markup
+    )
+@bot.callback_query_handler(func=lambda call: call.data.startswith("depositconfirm_"))
+def handle_confirm_deposit(call):
+    try:
+        bot.answer_callback_query(call.id, "Подтверждение получено.")
+    except ApiTelegramException as e:
+        print(f"[handle_confirm_deposit] answer_callback_query failed: {e}")
+
+    user_id = int(call.data.split("_")[-1])
+    print(user_id)
+
+    # Отправляем клиенту подтверждение
+    try:
+        bot.send_message(user_id, "✅ Ваш залог подтвержден. Спасибо!")
+    except ApiTelegramException as e:
+        print(f"[handle_confirm_deposit] send_message to {user_id} failed: {e}")
+
+    # Обновляем статус в базе
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE bookings SET deposit_status = 'paid' WHERE user_id = ? AND status = 'confirmed'",
+            (user_id,)
+        )
+        cur.execute(
+            "UPDATE users SET status = 'waiting_rental' WHERE telegram_id = ?",
+            (user_id,)
+        )
+        conn.commit()
+    # Редактируем сообщение у оператора
+    try:
+        bot.edit_message_text(
+            "✅ Залог подтверждён.",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None
+        )
+    except ApiTelegramException as e:
+        print(f"[handle_confirm_deposit] edit_message_text failed: {e}")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("deposit_paid_"))
+def handle_deposit_paid(call):
+    try:
+        bot.answer_callback_query(call.id, "✅ Залог отмечен как оплаченный.")
+
+        _, _, booking_id, user_id = call.data.split("_")
+        booking_id = int(booking_id)
+        user_id = int(user_id)
+
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+
+            # Обновляем статус залога
+            cur.execute("UPDATE bookings SET deposit_status = 'paid' WHERE id = ?", (booking_id,))
+            conn.commit()
+
+            # Получаем тип услуги + ФИО клиента
+            cur.execute("SELECT service FROM bookings WHERE id = ?", (booking_id,))
+            result = cur.fetchone()
+            if not result:
+                bot.send_message(user_id, "❌ Ошибка: бронь не найдена.")
+                return
+
+            service = result[0].lower()
+
+            cur.execute("SELECT full_name FROM users WHERE telegram_id = ?", (user_id,))
+            user_row = cur.fetchone()
+            full_name = user_row[0] if user_row else "клиента"
+
+            # Получаем данные об автомобиле
+            cur.execute("""
+                SELECT cars.brand_model, cars.number, cars.price
+                FROM bookings
+                JOIN cars ON bookings.car_id = cars.car_id
+                WHERE bookings.id = ?
+            """, (booking_id,))
+            car_row = cur.fetchone()
+            if not car_row:
+                bot.send_message(user_id, "❌ Ошибка: автомобиль не найден.")
+                return
+
+            car_model, car_number, car_price = car_row
+            # Получаем даты аренды
+
+        if service == "rent":
+
+            bot.send_message(user_id, "✅ Оператор подтвердил получение залога.",
+                        reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(user_id, "✅ Оператор подтвердил получение залога.")
+        markup = InlineKeyboardMarkup()
+        operator_msg = ""
+
+        if service == "rental":
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                            SELECT price
+                            FROM rental_history
+                            WHERE user_id = ? AND status = 'confirmed'
+                        """, (user_id,))
+                rent_row = cur.fetchone()
+                if not rent_row or rent_row[0] is None:
+                    bot.send_message(user_id, "❌ Ошибка: не найдена цена.")
+                    return
+
+            price = rent_row[0]
+            # Следующий шаг — оплата аренды
+            markup.add(InlineKeyboardButton(
+                f"💸 Аренда {price} ₽ оплачена",
+                callback_data=f"rent_paid_{booking_id}_{user_id}"
+            ))
+
+            operator_msg = (
+                f"💰 Залог получен.\n"
+                f"Пожалуйста, примите оплату за аренду у клиента."
+            )
+            try:
+                bot.edit_message_reply_markup(
+                    chat_id=call.message.chat.id,
+                    message_id=call.message.message_id,
+                    reply_markup=None
+                )
+            except Exception as e:
+                print(f"Ошибка при удалении кнопки: {e}")
+            bot.send_message(call.message.chat.id, operator_msg, reply_markup=markup)
+
+        else:  # краткосрочная аренда
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("➡️ Осмотр авто", callback_data=f"continue_inspection_{booking_id}_{user_id}"))
+
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("UPDATE bookings SET docs_given = 1 WHERE id = ?", (booking_id,))
+                conn.commit()
+
+            bot.send_message(
+                user_id,
+                f"📄 Оператор открыл машину.\n\n"
+                f"🚶 Сейчас подойдите к машине *{car_model}* *{car_number}*, чтобы ознакомиться с договором и осмотреть авто перед началом аренды.\n\n"
+                f"🔓 От оператора вы получили две копии следующих документов:\n"
+                f"• договор аренды\n"
+                f"• соглашение о внесении залога\n"
+                f"• приложение и обязательства арендатора\n\n"
+                f"✍️ Впишите паспортные данные, поставьте дату и подпись на *обеих копиях* там, где это необходимо.\n\n"
+                f"🧾 Один экземпляр оставьте в бардачке — он нужен для возможных проверок и подтверждения аренды.\n"
+                f"📩 Второй экземпляр сдайте оператору, чтобы получить ключи от автомобиля.",
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+
+            operator_msg = (
+                f"📄 Залог получен от клиента\n Выдайте клиенту договор на имя *{full_name}*.\n\n"
+                f"🚗 Пожалуйста, откройте машину клиенту, чтобы он мог ознакомиться с договором.\n\n"
+                f"❗ Важно: передача ключей происходит *только после* принятия копии договора.\n"
+                f"Проверьте, указаны ли *даты и подписи* во всех необходимых местах."
+            )
+
+            bot.send_message(call.message.chat.id, operator_msg, parse_mode="Markdown")
+
+    except Exception as e:
+        print(f"❌ Ошибка в handle_deposit_paid: {e}")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("rent_paid_"))
+def handle_rent_paid(call):
+    try:
+        bot.answer_callback_query(call.id, "✅ Аренда отмечена как оплаченная.")
+
+        parts = call.data.split("_")
+        booking_id = int(parts[2])
+        user_id = int(parts[3])
+
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+
+            cur.execute("UPDATE bookings SET docs_given = 1 WHERE id = ?", (booking_id,))
+            conn.commit()
+            # Находим rental_history запись по user_id и статусу confirmed
+            cur.execute(
+                "SELECT id FROM rental_history WHERE user_id = ? AND status = 'confirmed'",
+                (user_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                bot.send_message(user_id, "❌ Ошибка: запись аренды не найдена.")
+                return
+            rental_history_id = row[0]
+
+            # Обновляем sum_status в rental_history
+            cur.execute(
+                "UPDATE rental_history SET sum_status = 'paid' WHERE id = ?",
+                (rental_history_id,)
+            )
+            conn.commit()
+
+            # Получаем данные для оператора
+            cur.execute("""
+                SELECT 
+                    b.car_id,
+                    c.brand_model,
+                    c.year,
+                    c.station,
+                    c.number,
+                    u.full_name
+                FROM bookings b
+                JOIN cars c ON b.car_id = c.car_id
+                JOIN users u ON b.user_id = u.telegram_id
+                WHERE b.id = ?
+            """, (booking_id,))
+            booking_info = cur.fetchone()
+
+        if not booking_info:
+            bot.send_message(user_id, "❌ Ошибка: информация о бронировании не найдена.")
+            return
+
+        car_model = booking_info[1]
+        car_year = booking_info[2]
+        car_station = booking_info[3]
+        car_number = booking_info[4]
+        full_name = booking_info[5]
+
+        operator_id = STATION_OPERATORS.get(car_station)
+
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("➡️ Осмотр авто", callback_data=f"continue_inspection_{booking_id}_{user_id}"))
+
+        bot.send_message(
+            user_id,
+            f"📄 Оператор открыл машину.\n\n"
+            f"🚶 Сейчас подойдите к машине *{car_model}* *{car_number}*, чтобы ознакомиться с договором и осмотреть авто перед началом аренды.\n\n"
+            f"🔓 От оператора вы получили две копии следующих документов:\n"
+            f"• договор аренды\n"
+            f"• соглашение о внесении залога\n"
+            f"• приложение и обязательства арендатора\n\n"
+            f"✍️ Впишите паспортные данные, поставьте дату и подпись на *обеих копиях* там, где это необходимо.\n\n"
+            f"🧾 Один экземпляр оставьте в бардачке — он нужен для возможных проверок и подтверждения аренды.\n"
+            f"📩 Второй экземпляр сдайте оператору, чтобы получить ключи от автомобиля.",
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
+
+        # 2. Сообщение оператору — с кнопкой
+        if operator_id:
+
+
+            operator_msg = (
+                f"📄 Все оплаты подтверждены.\n"
+                
+                f"Марка: {car_model} ({car_year})\n"
+                f"Госномер: {car_number}\n\n"
+                f"Выдайте клиенту договор на имя {full_name}\n"
+                f"🚗 Пожалуйста, откройте машину клиенту, чтобы он мог ознакомиться с договором.\n\n"
+                f"❗ Важно: передача ключей происходит *только после* принятия копии договора.\n"
+                f"Проверьте, указаны ли *даты и подписи* во всех необходимых местах."
+            )
+
+            bot.send_message(operator_id, operator_msg, parse_mode="Markdown")
+        else:
+            bot.send_message(call.message.chat.id, "⚠️ Оператор не найден.")
+
+    except Exception as e:
+        print(f"Ошибка в handle_rent_paid: {e}")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("docs_given_"))
+def handle_keys_given(call):
+    try:
+        _, _, booking_id, user_id = call.data.split("_")
+        booking_id = int(booking_id)
+        user_id = int(user_id)
+
+        # Получаем данные о машине, пользователе и фото паспорта
+        with get_db_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+
+            cur.execute("""
+                SELECT 
+                    b.car_id,
+                    c.brand_model,
+                    c.number,
+                    c.station,
+                    u.full_name,
+                    u.passport_front_photo,
+                    u.passport_back_photo
+                FROM bookings b
+                JOIN cars c ON b.car_id = c.car_id
+                JOIN users u ON b.user_id = u.telegram_id
+                WHERE b.id = ?
+            """, (booking_id,))
+            row = cur.fetchone()
+
+        if not row:
+            bot.send_message(call.from_user.id, "❌ Бронирование не найдено.")
+            return
+
+        car_model = row["brand_model"]
+        car_number = row["number"]
+        station = row["station"]
+        full_name = row["full_name"]
+        passport_front = row["passport_front_photo"]
+        passport_back = row["passport_back_photo"]
+
+        operator_id = STATION_OPERATORS.get(station)
+        if not operator_id:
+            bot.send_message(call.from_user.id, "❌ Не удалось определить оператора для этой станции.")
+            return
+
+        # Сообщение оператору
+        operator_msg = (
+            f"📄 Клиент *{full_name}* передаёт вам договор на аренду автомобиля:\n"
+            f"🚗 *{car_model}* — *{car_number}*\n\n"
+            f"🔍 Проверьте, чтобы:\n"
+            f"• все даты и подписи были заполнены\n")
+        # operator_msg = (
+        #     f"📄 Клиент *{full_name}* передаёт вам договор на аренду автомобиля:\n"
+        #     f"🚗 *{car_model}* — *{car_number}*\n\n"
+        #     f"🔍 Проверьте, чтобы:\n"
+        #     f"• все даты аренды были заполнены\n"
+        #     f"• подписи клиента стояли в нужных местах (4 подписи)\n"
+        #     f"• паспортные данные были заполнены в 2 местах\n"
+        #     f"• данные в договоре совпадали с паспортом\n\n"
+        #     f"📌 Фото паспорта отправлены ниже для сверки."
+        # )
+
+        operator_markup = InlineKeyboardMarkup()
+        operator_markup.add(
+            InlineKeyboardButton("📄 Договор принят", callback_data=f"keys_given_{booking_id}_{user_id}")
+        )
+
+        bot.send_message(
+            operator_id,
+            operator_msg,
+            parse_mode="Markdown",
+            reply_markup=operator_markup  # ← прикрепляем клавиатуру
+        )
+        # # 2️⃣ Отправляем фото
+        # if passport_front:
+        #     bot.send_photo(operator_id, passport_front, caption="📄 Паспорт (лицевая сторона)")
+        #
+        # if passport_back:
+        #     # Кнопка под последним фото
+        #     bot.send_photo(operator_id, passport_back, caption="📄 Паспорт (обратная сторона)",
+        #                    reply_markup=operator_markup)
+        # else:
+        #     # Если задней стороны нет — кнопку ставим после переднего фото
+        #     if passport_front:
+        #         bot.send_message(operator_id, "📄 Подтвердите приём договора:", reply_markup=operator_markup)
+    except Exception as e:
+        print(f"[handle_keys_given] ❌ Ошибка: {e}")
+sent_messages = {}
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("keys_given_"))
+def handle_keys_transfer(call):
+    try:
+        parts = call.data.split("_")
+        booking_id = int(parts[-2])
+        user_id = int(parts[-1])
+
+        # Получаем данные о машине и клиенте
+        with get_db_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+
+            cur.execute("""
+                SELECT c.brand_model, c.number, c.station, u.full_name
+                FROM bookings b
+                JOIN cars c ON b.car_id = c.car_id
+                JOIN users u ON b.user_id = u.telegram_id
+                WHERE b.id = ?
+            """, (booking_id,))
+            row = cur.fetchone()
+
+        if not row:
+            bot.send_message(call.from_user.id, "❌ Ошибка: данные бронирования не найдены.")
+            return
+
+        car_model = row["brand_model"]
+        car_number = row["number"]
+        full_name = row["full_name"]
+
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔑 Ключи переданы", callback_data=f"finished_confirmation_{booking_id}_{user_id}"))
+
+
+        msg_op = bot.send_message(
+            call.from_user.id,
+            f"✅ Отлично! Теперь передайте клиенту ключи от автомобиля *{car_model}* *{car_number}*.",
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
+        sent_messages.setdefault(call.from_user.id, []).append(msg_op.message_id)
+    except Exception as e:
+        print(f"[handle_keys_transfer] ❌ Ошибка: {e}")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("continue_inspection_"))
+def handle_inspection_start(call):
+    parts = call.data.split("_")
+    booking_id = int(parts[-2])
+    user_id = int(parts[-1])
+
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("✅ Я осмотрел автомобиль", callback_data=f"inspection_done_{booking_id}_{user_id}"))
+
+    instructions = (
+        "🛠 <b>Инструкция по осмотру:</b>\n"
+        "- Проверьте кузов на наличие вмятин, царапин, сколов\n"
+        "- Осмотрите стёкла и зеркала\n"
+        "- Проверьте салон\n"
+        "- Зафиксируйте уровень газа и пробег\n\n"
+        "Если что-то заметите — сообщите дальше."
+    )
+    bot.send_message(user_id, instructions, parse_mode="HTML", reply_markup=markup)
+    bot.answer_callback_query(call.id)
+
+inspection_states = {}
+user_contract_data = {}
+@bot.callback_query_handler(func=lambda call: call.data.startswith("inspection_done_"))
+def handle_contract_display(call):
+    parts = call.data.split("_")
+    booking_id = int(parts[-2])
+    user_id = int(parts[-1])
+
+    # Сохраняем начальное состояние
+    inspection_states[user_id] = {
+        "booking_id": booking_id,
+        "confirmations": {
+            "gas": False,
+            "mileage": False,
+            "scratches": False,
+            "cleanliness": False
+        },
+        "reported_issue": False
+    }
+
+    message = (
+        f"🚗 <b>Проверьте автомобиль</b>"
+        f"Пожалуйста, подтвердите следующее перед продолжением:")
+
+    bot.send_message(user_id, message, parse_mode="HTML", reply_markup=generate_inspection_buttons(user_id))
+    bot.answer_callback_query(call.id)
+
+def generate_inspection_buttons(user_id):
+    state = inspection_states.get(user_id, {})
+    confirmations = state.get("confirmations", {})
+    print(f"[generate_inspection_buttons] user_id={user_id}, state={state}")
+    def mark(param):
+        return "☑" if confirmations.get(param) else "☐"
+
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton(f"{mark('gas')} Уровень газа соответствует", callback_data=f"inspect_confirm_gas"),
+        InlineKeyboardButton(f"{mark('mileage')} Километраж соответствует", callback_data=f"inspect_confirm_mileage"),
+        InlineKeyboardButton(f"{mark('scratches')} Царапин нет", callback_data=f"inspect_confirm_scratches"),
+        InlineKeyboardButton(f"{mark('cleanliness')} Машина чистая", callback_data=f"inspect_confirm_cleanliness"),
+        InlineKeyboardButton("❗ Сообщить о проблеме", callback_data="inspect_report_problem")
+    )
+
+    if all(confirmations.values()) or state.get("reported_issue"):
+        cb_data = f"sign_contract_{state['booking_id']}_{user_id}"
+        print(f"[generate_inspection_buttons] ➕ Добавлена кнопка с callback_data: {cb_data}")
+        markup.add(InlineKeyboardButton("✅ Продолжить к договору", callback_data=cb_data))
+    return markup
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("inspect_confirm_"))
+def handle_inspection_confirm(call):
+    user_id = call.from_user.id
+    param = call.data.split("_")[-1]  # gas / mileage / scratches / cleanliness
+
+    state = inspection_states.setdefault(user_id, {"confirmations": {}, "reported_issue": False})
+    current = state["confirmations"].get(param, False)
+    state["confirmations"][param] = not current
+
+    bot.answer_callback_query(call.id)
+    bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=generate_inspection_buttons(user_id))
+
+@bot.callback_query_handler(func=lambda call: call.data == "inspect_report_problem")
+def handle_inspection_problem(call):
+    user_id = call.from_user.id
+    inspection_states.setdefault(user_id, {"confirmations": {}, "reported_issue": False})
+    session = get_session(user_id)
+
+    session["state"] = "waiting_for_issue_description"
+
+    bot.answer_callback_query(call.id, "Опишите проблему и прикрепите фото")
+
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔙 Назад", callback_data="inspect_back_to_check"))
+
+    bot.send_message(user_id, "📝 Пожалуйста, опишите проблему (текстом). После этого пришлите фото.", reply_markup=markup)
+
+    try:
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
+                                     reply_markup=generate_inspection_buttons(user_id))
+    except telebot.apihelper.ApiTelegramException as e:
+        if "message is not modified" in str(e):
+            pass
+        else:
+            raise
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "inspect_back_to_check")
+def handle_back_to_inspection(call):
+    user_id = call.from_user.id
+
+    # Удаляем временное состояние описания проблемы
+    session = get_session(user_id)
+    session["state"] = None
+
+    bot.answer_callback_query(call.id)
+    bot.edit_message_text(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        text="🚗 <b>Проверьте автомобиль</b>\nПожалуйста, подтвердите следующее перед продолжением:",
+        parse_mode="HTML",
+        reply_markup=generate_inspection_buttons(user_id)
+    )
+
+
+
+
+# 📋 Хендлер для описания проблемы при осмотре автомобиля
+@bot.message_handler(func=lambda m: get_session(m.from_user.id).get("state") == "waiting_for_issue_description", content_types=["text"])
+def handle_issue_description(message):
+    user_id = message.from_user.id
+    session = get_session(user_id)
+
+    session["inspection_issue_text"] = message.text
+    session["state"] = "waiting_for_issue_photo"
+    bot.send_message(user_id, "📸 Теперь пришлите фото, связанное с проблемой.")
+
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("sign_contract_"))
+def handle_contract_signed(call):
+    try:
+        parts = call.data.split("_")
+        booking_id = int(parts[-2])
+        user_id = int(parts[-1])
+        bot.answer_callback_query(call.id)
+
+        # Получаем данные о клиенте и машине из базы
+        with get_db_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+
+            cur.execute("""
+                SELECT 
+                    u.full_name,
+                    c.brand_model,
+                    c.number
+                FROM bookings b
+                JOIN cars c ON b.car_id = c.car_id
+                JOIN users u ON b.user_id = u.telegram_id
+                WHERE b.id = ?
+            """, (booking_id,))
+            row = cur.fetchone()
+
+        if not row:
+            bot.send_message(user_id, "❌ Не удалось найти данные по бронированию.")
+            return
+
+        full_name = row["full_name"]
+        car_model = row["brand_model"]
+        car_number = row["number"]
+
+        # Инициализация хранилища пользователя
+        if user_id not in user_contract_data:
+            user_contract_data[user_id] = {}
+        user_contract_data[user_id]["awaiting_document"] = True
+
+        # Инструкция по заполнению договора
+        bot.send_message(
+            user_id,
+            f"📄 *{full_name}*, перед тем как передать договор на аренду автомобиля оператору, "
+            f"пожалуйста, убедитесь, что *все поля заполнены*.\n\n"
+            f"📌 Поставьте подписи и даты, где это необходимо\n",
+            parse_mode="Markdown"
+        )
+        # bot.send_message(
+        #     user_id,
+        #     f"📄 *{full_name}*, перед тем как передать договор на аренду автомобиля оператору, "
+        #     f"пожалуйста, убедитесь, что *все поля заполнены*.\n\n"
+        #     f"🚗 Автомобиль: *{car_model}* — *{car_number}*\n\n"
+        #     f"✅ Что нужно сделать:\n"
+        #     f"1️⃣ Поставить даты аренды (все даты в договоре).\n"
+        #     f"2️⃣ Проставить свою подпись в *4 местах*, отмеченных для 'Арендатора'.\n"
+        #     f"3️⃣ Заполнить паспортные данные в *2 местах* "
+        #     f"(серия, номер, кем и когда выдан, код подразделения).\n"
+        #     f"4️⃣ Заполнить ФИО, дату рождения, место рождения, адрес регистрации и проживания, телефон.\n\n"
+        #     f"📌 *Пример заполнения:*\n"
+        #     f"Иванов Иван Иванович,\n"
+        #     f"дата рождения: 15.04.1990,\n"
+        #     f"место рождения: г. Москва\n"
+        #     f"адрес регистрации: г. Москва, ул. Ленина, д. 15, кв. 45\n"
+        #     f"адрес фактического проживания: г. Москва, ул. Мира, д. 7, кв. 12\n"
+        #     f"паспорт РФ 45 12 345678\n"
+        #     f"Код подразделения: 770-001,\n"
+        #     f"Телефон: +7 (916) 123-45-67\n"
+        #     f"__________________________/Иванов И.И./\n"
+        #     f"(подпись арендатора, дата)\n",
+        #     parse_mode="Markdown"
+        # )
+        # Кнопка подтверждения
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton("✅ Я подписал договор", callback_data=f"docs_given_{booking_id}_{user_id}")
+        )
+
+
+        msg = bot.send_message(user_id, "Когда вы подпишете договор, нажмите на кнопку ниже 👇", reply_markup=markup)
+        sent_messages.setdefault(user_id, []).append(msg.message_id)
+    except Exception as e:
+        print(f"[handle_contract_signed] ❌ Ошибка: {e}")
+        error_log = getattr(bot, 'error_log', {})
+        error_log[user_id] = str(e)
+        bot.error_log = error_log
+@bot.callback_query_handler(func=lambda call: call.data.startswith("finished_confirmation"))
+def handle_doc_verification(call):
+    try:
+        parts = call.data.split("_")
+        booking_id = int(parts[-2])
+        user_id = int(parts[-1])
+
+        conn = sqlite3.connect("cars.db")
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        # Обновляем статус пользователя
+        cur.execute("UPDATE users SET status = ? WHERE telegram_id = ?", ("using_car", user_id))
+
+        # Обновляем статус бронирования
+        cur.execute("UPDATE bookings SET status = 'process' WHERE user_id = ?", (user_id,))
+
+        # Получаем rental_history для user_id, если нужно
+        cur.execute("""
+            SELECT rent_end, price
+            FROM rental_history
+            WHERE user_id = ? AND status = 'confirmed'
+            ORDER BY id DESC LIMIT 1
+        """, (user_id,))
+        rental = cur.fetchone()
+
+        if rental:
+            rent_end_date = rental["rent_end"]
+            price = rental["price"]
+            start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now_time = datetime.now().strftime("%H:%M:%S")
+            end_time = f"{rent_end_date} {now_time}"
+
+            cur.execute("""
+                UPDATE rental_history
+                SET start_time = ?, end_time = ?
+                WHERE user_id = ? AND status = 'confirmed'
+            """, (start_time, end_time, user_id))
+
+        # Найти название станции по оператору call.from_user.id
+        operator_id = call.from_user.id
+        station_address = None
+
+        for addr, op_id in STATION_OPERATORS.items():
+            if op_id == operator_id:
+                station_address = addr
+                print(f"Адрес станции по оператору: {station_address}")
+                break
+
+        if station_address:
+            station_code = STATION_ADDRESSES_TO_CODES.get(station_address)
+            print(f"Код станции: {station_code}")
+
+            cur.execute("""
+                UPDATE shifts
+                SET cars_sold = COALESCE(cars_sold, 0) + 1,
+                    sold_sum = COALESCE(sold_sum, 0) + ?
+                WHERE station = ? AND active = 1
+            """, (price, station_code))
+        # Получаем имя и телефон пользователя
+        cur.execute("SELECT name, phone, purpose FROM users WHERE telegram_id = ?", (user_id,))
+        user_info = cur.fetchone()
+        name, phone, purpose = user_info
+        conn.commit()
+        conn.close()
+        print(name, phone, purpose)
+        # Уведомление пользователя
+        bot.answer_callback_query(call.id, "Документы подтверждены.")
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        markup.add("/start")  # кнопка, которая отправляет команду /start
+        bot.send_message(user_id,
+            "🎉 Отлично! Теперь вы — официальный клиент нашей компании.\n\nНажмите на кнопку снизу, чтобы начать аренду.", reply_markup=markup)
+
+        # Если пользователь шёл в такси — отправим уведомление
+        if purpose == "taxi" and user_info:
+            bot.send_message(
+                TAXI_SETUP_MANAGER_ID,
+                f"🚖 Пользователь готов к устройству в такси:\n"
+                f"👤 Имя: {name}\n"
+                f"📞 Телефон: {phone}\n"
+                f"🆔 Telegram ID: {user_id}"
+            )
+
+    except Exception as e:
+        print(f"[handle_doc_verification] Ошибка: {e}")
+@bot.message_handler(commands=['set_deposit'])
+def set_deposit_status(message):
+    if message.from_user.id != ADMIN_ID2:
+        bot.reply_to(message, "❌ У тебя нет прав на выполнение этой команды.")
+        return
+
+    try:
+        _, booking_id, status = message.text.strip().split()
+        status = status.lower()
+
+        if status not in ['paid', 'unpaid']:
+            bot.reply_to(message, "❗ Статус должен быть 'paid' или 'unpaid'.")
+            return
+
+        conn = sqlite3.connect("cars.db")
+        cursor = conn.cursor()
+
+        cursor.execute("UPDATE bookings SET deposit_status = ? WHERE id = ?", (status, booking_id))
+        conn.commit()
+        conn.close()
+
+        bot.reply_to(message, f"✅ Статус залога для заявки #{booking_id} обновлён на: {status}")
+
+    except ValueError:
+        bot.reply_to(message, "⚠️ Неверный формат команды. Пример: /set_deposit 12 paid")
+    except Exception as e:
+        bot.reply_to(message, f"🚫 Ошибка: {e}")
+
+
 @bot.message_handler(func=lambda message: (get_state(message.from_user.id) or "").startswith("waiting_for_time_selection|"))
 def handle_date_selection(message):
     from datetime import datetime
@@ -2486,14 +5800,13 @@ def handle_date_selection(message):
         WHERE date = ? AND status = 'confirmed'
     """, (date_str,))
     booked_times = set(t[0] for t in c.fetchall())
-    conn.close()
 
     # Формируем inline-клавиатуру
     markup = types.InlineKeyboardMarkup(row_width=3)
     has_available = False
 
-    for hour in range(0, 24):  # Время с 10:00 до 19:59
-        for minute in range(0, 60, 10):  # каждые 10 минут
+    for hour in range(10, 19):  # Время с 10:00 до 19:59
+        for minute in range(0, 60, 30):  # каждые 10 минут
             time_str = f"{hour:02}:{minute:02}"
             if time_str not in booked_times:
                 has_available = True
@@ -2533,14 +5846,16 @@ def handle_time_selection(call):
 
     telegram_id = call.from_user.id
     chat_id = call.message.chat.id
-
+    bot.edit_message_reply_markup(chat_id=call.message.chat.id,
+                                  message_id=call.message.message_id,
+                                  reply_markup=None)
     conn = sqlite3.connect('cars.db')
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
     try:
         # Получаем пользователя по telegram_id
-        cursor.execute("SELECT id, telegram_id, name FROM users WHERE telegram_id = ?", (telegram_id,))
+        cursor.execute("SELECT id, telegram_id, name, phone FROM users WHERE telegram_id = ?", (telegram_id,))
         user_row = cursor.fetchone()
         if not user_row:
             bot.send_message(chat_id, "⚠️ Вы не зарегистрированы. Нажмите /start.")
@@ -2548,6 +5863,10 @@ def handle_time_selection(call):
 
         user_id = user_row['id']
         user_telegram_id = user_row['telegram_id']
+        phone = user_row['phone']
+        session = get_session(user_telegram_id)
+        session["selected_service"] = service
+
         full_name = user_row['name']
 
         # Сохраняем бронирование
@@ -2557,9 +5876,9 @@ def handle_time_selection(call):
         """, (service, car_id, user_telegram_id, date_str, time_str, 'pending'))
         conn.commit()
 
-        if car_id != 0 and car_id is not None:
-            cursor.execute("UPDATE cars SET is_available = 0 WHERE car_id = ?", (car_id,))
-            conn.commit()
+        #if car_id != 0 and car_id is not None:
+            #cursor.execute("UPDATE cars SET is_available = 0 WHERE car_id = ?", (car_id,))
+            #conn.commit()
 
         # Получаем данные машины, если есть
         car = None
@@ -2597,33 +5916,63 @@ def handle_time_selection(call):
         "rental": "прокат",
         "taxi": "такси",
         "газель": "газель",
-        "painter": "маляр"
+        "painter": "маляр",
+        "return": "хочет сдать авто"
     }.get(service, service)
 
     # Формируем клавиатуру (без кнопки "Ответить")
     car_id_str = car_id_str if car_id_str.isdigit() else "0"
     markup = types.InlineKeyboardMarkup()
+
+    if service != "return":
+        markup.add(
+            types.InlineKeyboardButton(
+                "✅ Принять",
+                callback_data=f"approve_{service}_{car_id_str}_{user_id}_{user_telegram_id}_{date_str}_{time_str}"
+            )
+        )
+    else:
+        markup.add(
+            types.InlineKeyboardButton(
+                "✅ Принять",
+                callback_data=f"chooseplace_{service}_{car_id_str}_{user_id}_{user_telegram_id}_{date_str}_{time_str}"
+            )
+        )
+
     markup.add(
-        types.InlineKeyboardButton("✅ Принять",
-                                   callback_data=f"approve_{service}_{car_id_str}_{user_id}_{user_telegram_id}_{date_str}_{time_str}"),
-        types.InlineKeyboardButton("🕒 Предложить другое время",
-                                   callback_data=f"suggest_{car_id_str}_{user_telegram_id}"),
+        types.InlineKeyboardButton(
+            "🕒 Предложить другое время",
+            callback_data=f"suggest_{car_id_str}_{user_telegram_id}"
+        )
     )
-    markup.add(
-        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{car_id_str}_{user_telegram_id}"),
-    )
+
+    if service != "return":
+        markup.add(
+            types.InlineKeyboardButton(
+                "❌ Отклонить",
+                callback_data=f"reject_{car_id_str}_{user_telegram_id}"
+            )
+        )
+    else:
+        markup.add(
+            types.InlineKeyboardButton(
+                "❌ Отговорил",
+                callback_data=f"remind_{car_id_str}_{user_telegram_id}"
+            )
+        )
 
     # Добавляем кнопку "Водительское удостоверение", только если сервис не painter
     if service != "painter":
         markup.add(types.InlineKeyboardButton(
             "📄 Водительское удостоверение",
-            callback_data=f"show_driver_license_{user_telegram_id}"
+            callback_data=f"show_documents_{user_telegram_id}"
         ))
 
     # Формируем сообщение админу
     message_text = (
         f"📥 Новая заявка:\n\n"
         f"👤 Имя: {full_name}\n"
+        f" Телефон: {phone}\n"
         f"🛠 Услуга: {service_display}\n"
         f"📅 Дата: {date_str}\n"
         f"⏰ Время: {time_str}"
@@ -2638,46 +5987,104 @@ def handle_time_selection(call):
     # Отправляем админу
     bot.send_message(ADMIN_ID2, message_text, reply_markup=markup)
     bot.send_message( user_telegram_id, f"✅Отлично!\nМы Уже отправили заявку админу. Это может занять некоторое время")
-@bot.message_handler(commands=['show_bookings'])
-def show_bookings(message):
+
+addresses = {
+    "addr1": "Южное шоссе 129",
+    "addr2": "Южное шоссе 12/2",
+    "addr3": "Лесная 66А",
+    "addr4": "Борковская 59",
+    "addr5": "Борковская 72/1"
+}
+
+# В chooseplace_ callback handler
+@bot.callback_query_handler(func=lambda call: call.data.startswith('chooseplace_'))
+def chooseplace_callback_handler(call):
+    # Сохраняем параметры после префикса 'chooseplace_' в словарь, используя chat_id как ключ
+    user_data = call.data[len('chooseplace_'):]  # все параметры
+    # Сохраняем где-то, например в словаре
+    session[call.from_user.id] = user_data  # sessions — глобальный словарь
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for key, name in addresses.items():
+        markup.add(types.InlineKeyboardButton(name, callback_data=f"address_{key}"))
+    bot.send_message(call.message.chat.id, "Выберите адрес:", reply_markup=markup)
+    bot.answer_callback_query(call.id)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('address_'))
+def address_callback_handler(call):
+    addr_key = call.data[len('address_'):]
+    address = addresses.get(addr_key, "Неизвестный адрес")
+
+    # Получаем сохранённые данные для пользователя
+    user_data = session.get(call.from_user.id)
+    if not user_data:
+        bot.answer_callback_query(call.id, "Ошибка: данные не найдены.")
+        return
+
+    # Разбираем user_data, например: service_carid_userid_usertelegramid_date_time
+    parts = user_data.split('_')
+    service = parts[0]
+    car_id = parts[1]
+    user_id = int(parts[2])
+    user_telegram_id = int(parts[3])
+    date_str = parts[4]
+    time_str = parts[5]
+    conn = sqlite3.connect('cars.db')
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    update_query = '''
+                        UPDATE bookings
+                        SET status = 'confirmed'
+                        WHERE service = ? AND car_id = ? AND user_id = ? AND date = ? AND time = ?
+                    '''
+    params = (service, car_id, user_telegram_id, date_str, time_str)
+
+
+    print(service, car_id, user_telegram_id, date_str, time_str)
+    cursor.execute(update_query, params)
+    conn.commit()
+
+
+    # Далее запрос к базе и отправка сообщений как раньше
+    cursor.execute("SELECT date, time FROM bookings WHERE user_id=? AND car_id=? AND status='process' ORDER BY created_at DESC LIMIT 1", (user_id, car_id))
+    booking = cursor.fetchone()
+    if booking:
+        date_str = booking[0]
+        time_str = booking[1]
+
+    client_msg = f"Ваша заявка на сдачу авто принята.\nВстреча назначена на {date_str} в {time_str}.\nАдрес встречи: {address}."
+    bot.send_message(user_telegram_id, client_msg)
+    bot.send_message(call.message.chat.id, f"Клиенту отправлено сообщение с адресом: {address}")
+
+    bot.answer_callback_query(call.id)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("remind_"))
+def handle_remind(call):
     try:
+        # Данные: remind_{car_id}_{user_telegram_id}
+        _, car_id_str, user_telegram_id_str = call.data.split("_")
+        chat_id = call.message.chat.id
+        message_id = call.message.message_id
+
+        # Можно выполнить действия с базой или логикой:
+        # Например, отметить заявку как "отговорена" или удалить её
         conn = sqlite3.connect('cars.db')
-        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+        # Пример: удалим заявку у админа (если есть связь в БД)
 
-        cursor.execute("SELECT * FROM bookings ORDER BY id DESC")
-        bookings = cursor.fetchall()
 
-        if not bookings:
-            bot.send_message(message.chat.id, "📋 Нет бронирований.")
-            return
+        # Удалим сообщение с кнопками у админа (или просто отредактируем)
+        bot.delete_message(chat_id, message_id)
 
-        def split_message(text, max_length=4000):
-            parts = []
-            while len(text) > max_length:
-                split_index = text.rfind('\n', 0, max_length)
-                if split_index == -1:
-                    split_index = max_length
-                parts.append(text[:split_index])
-                text = text[split_index:]
-            parts.append(text)
-            return parts
+        # Ответим админу, что заявка отговорена
+        bot.answer_callback_query(call.id, text="Заявка отговорена и удалена.")
 
-        response = ""
-        for b in bookings:
-            response += (
-                f"ID: {b['id']}, Service: {b['service']}, Car ID: {b['car_id']}, "
-                f"User ID: {b['user_id']}, Date: {b['date']}, Time: {b['time']}, "
-                f"Status: {b['status']}\n"
-            )
-
-        for part in split_message(response):
-            bot.send_message(message.chat.id, part)
-
+        # Можно оповестить пользователя
+        bot.send_message(int(user_telegram_id_str),
+                         "Рад, что вы остались с нами. Надеюсь дальше всё будет хорошо😉 ")
     except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка при получении бронирований: {e}")
-    finally:
-        conn.close()
+        bot.answer_callback_query(call.id, text=f"Ошибка: {e}")
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("approve_"))
 def process_approve(call):
     try:
@@ -2729,9 +6136,10 @@ def process_approve(call):
                 update_query = '''
                     UPDATE bookings
                     SET status = 'confirmed'
-                    WHERE service = ? AND car_id IS NULL AND user_id = ? AND date = ? AND time = ?
+                    WHERE service = ? AND user_id = ? AND date = ? AND time = ?
                 '''
                 params = (service, telegram_id, date_str, time_str)
+                print(params)
             else:
                 update_query = '''
                     UPDATE bookings
@@ -2796,50 +6204,58 @@ def process_approve(call):
     except Exception as e:
         bot.answer_callback_query(call.id, f"Ошибка подтверждения: {e}")
         print(f"❌ Ошибка в process_approve: {e}")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("show_driver_license_"))
-def show_driver_license(call):
+@bot.callback_query_handler(func=lambda call: call.data.startswith("show_documents_"))
+def show_documents(call):
     try:
-        user_id = int(call.data[len("show_driver_license_"):])
+        telegram_id = int(call.data.split("_")[-1])
 
         with db_lock:
             conn = get_db_connection()
             cur = conn.cursor()
-            print(user_id)
-
-            cur.execute("SELECT driver_license_photo FROM users WHERE telegram_id = ?", (user_id,))
+            cur.execute("""
+                SELECT driver_license_photo, passport_front_photo, passport_back_photo 
+                FROM users WHERE telegram_id = ?
+            """, (telegram_id,))
             row = cur.fetchone()
             conn.close()
 
-        if row is None or not row[0]:
-            bot.answer_callback_query(call.id, "Фото водительского удостоверения не найдено.")
+        if not row:
+            bot.answer_callback_query(call.id, "Документы не найдены.")
             return
 
-        photo_file_id = row[0]
+        doc1, doc2, doc3 = row
 
-        # Кнопка "Скрыть"
+        if not any([doc1, doc2, doc3]):
+            bot.answer_callback_query(call.id, "Пользователь не загрузил документы.")
+            return
+
+        chat_id = call.message.chat.id
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("❌ Скрыть", callback_data="hiden_driver_license"))
+        markup.add(InlineKeyboardButton("❌ Скрыть", callback_data="hide_documents"))
 
-        bot.send_photo(
-            call.message.chat.id,
-            photo_file_id,
-            caption="Водительское удостоверение пользователя",
-            reply_markup=markup
-        )
+        # Отправляем доступные документы
+        if doc1:
+            bot.send_photo(chat_id, doc1, caption="📘 Водительское удостоверение", reply_markup=markup)
+
+        if doc2:
+            bot.send_photo(chat_id, doc2, caption="📕 Паспорт (лицевая сторона)", reply_markup=markup)
+
+        if doc3:
+            bot.send_photo(chat_id, doc3, caption="📙 Паспорт (обратная сторона)", reply_markup=markup)
+
         bot.answer_callback_query(call.id)
 
     except Exception as e:
         bot.answer_callback_query(call.id, f"Ошибка: {e}")
 
-@bot.callback_query_handler(func=lambda call: call.data == "hiden_driver_license")
-def hide_driver_license(call):
+
+@bot.callback_query_handler(func=lambda call: call.data == "hide_documents")
+def hide_documents(call):
     try:
         bot.delete_message(call.message.chat.id, call.message.message_id)
+        bot.answer_callback_query(call.id)
     except Exception as e:
-        bot.answer_callback_query(call.id, f"Не удалось скрыть: {e}")
-
-
+        print(f"Ошибка удаления документа: {e}")
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("suggest_") and
@@ -2951,12 +6367,13 @@ def show_time_selection(message, car_id, user_id, date_str):
 
     keyboard = types.InlineKeyboardMarkup(row_width=3)
     for hour in range(10, 19):
-        time_str = f"{hour:02d}:00"
-        if time_str in booked_times:
-            btn = types.InlineKeyboardButton(f"⛔ {time_str}", callback_data="busy")
-        else:
-            btn = types.InlineKeyboardButton(time_str, callback_data=f"suggest_time_{car_id}_{user_id}_{date_str}_{time_str}")
-        keyboard.add(btn)
+        for minute in range(0, 60, 30):  # каждые 10 минут
+            time_str = f"{hour:02}:{minute:02}"
+            if time_str in booked_times:
+                btn = types.InlineKeyboardButton(f"⛔ {time_str}", callback_data="busy")
+            else:
+                btn = types.InlineKeyboardButton(time_str, callback_data=f"suggest_time_{car_id}_{user_id}_{date_str}_{time_str}")
+            keyboard.add(btn)
 
     bot.send_message(message.chat.id, f"Выберите время для {date_str}:", reply_markup=keyboard)
 
@@ -2990,7 +6407,7 @@ def process_admin_time_selection(call):
             return
 
         # Получаем telegram_id по user_id
-        c.execute("SELECT telegram_id FROM users WHERE telegram_id = ?", (user_id,))
+        c.execute("SELECT id FROM users WHERE telegram_id = ?", (user_id,))
         result = c.fetchone()
         if not result:
             bot.send_message(call.message.chat.id, "❌ Не найден telegram_id для пользователя.")
@@ -3000,7 +6417,11 @@ def process_admin_time_selection(call):
         telegram_id = result[0]
 
         # Записываем предложенное время
-        service = 'rent'  # Можно сделать динамическим при необходимости
+        session = get_session(user_id)
+        service = session.get("selected_service")
+        if not service:
+            bot.send_message(call.message.chat.id, "❌ Ошибка: не удалось определить тип услуги.")
+            return # Можно сделать динамическим при необходимости
         c.execute('''
             INSERT INTO bookings (user_id, car_id, service, date, time, status)
             VALUES (?, ?, ?, ?, ?, 'suggested')
@@ -3009,13 +6430,23 @@ def process_admin_time_selection(call):
         conn.close()
 
         # Кнопка OK для клиента
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("OK", callback_data=f"ok_{service}_{car_id}_{user_id}_{date_str}_{time_str}"))
+        if service != "return":
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("OK",
+                                                  callback_data=f"ok_{service}_{car_id}_{user_id}_{date_str}_{time_str}"))
 
-        # Отправка клиенту
-        bot.send_message(telegram_id, f"📩 Администратор предлагает: {date_str} в {time_str}\nЕсли согласны, нажмите кнопку ниже.", reply_markup=markup)
-        bot.send_message(call.message.chat.id, "✅ Предложение отправлено клиенту.")
-
+            bot.send_message(telegram_id,
+                             f"📩 Администратор предлагает: {date_str} в {time_str}\nЕсли согласны, нажмите кнопку ниже.",
+                             reply_markup=markup)
+            bot.send_message(call.message.chat.id, "✅ Предложение отправлено клиенту.")
+        else:
+            # Вызываем функцию chooseplace, например передав call
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("продолжить",
+                                                  callback_data=f"chooseplace_{service}_{car_id}_{telegram_id}_{user_id}_{date_str}_{time_str}"))
+            bot.send_message(ADMIN_ID2,
+                             f"выберите место",
+                             reply_markup=markup)
     except Exception as e:
         bot.send_message(call.message.chat.id, f"❌ Ошибка: {e}")
 
@@ -3030,18 +6461,18 @@ def process_ok(call):
 
         service = parts[0]
         car_id_raw = parts[1]
+        print(car_id_raw)
         car_id = int(car_id_raw) if car_id_raw != "None" else 0
-        user_id = int(parts[2])
-        telegram_id = user_id  # Добавлено, чтобы отправлять сообщение в Telegram
+        user_id = int(parts[2])  # Добавлено, чтобы отправлять сообщение в Telegram
 
         date_str = parts[3]
         time_str = parts[4]
 
-        print(f"service={service}, car_id={car_id}, user_id={user_id}, date={date_str}, time={time_str}")
-
         with db_lock:
             conn = get_db_connection()
             cur = conn.cursor()
+
+            # Обновляем статус машины
 
             # Получаем telegram_id по user_id
             cur.execute("SELECT telegram_id FROM users WHERE telegram_id = ?", (user_id,))
@@ -3049,7 +6480,7 @@ def process_ok(call):
             if result is None or result[0] is None:
                 raise ValueError(f"Telegram ID не найден для user_id={user_id}")
             telegram_id = result[0]
-
+            print(f"service={service}, car_id={car_id}, user_id={telegram_id}, date={date_str}, time={time_str}")
             # Остальной твой код с выборкой delivery_address и delivery_price
             cur.execute("""
                     SELECT delivery_address, delivery_price 
@@ -3061,6 +6492,27 @@ def process_ok(call):
                     LIMIT 1
                 """, (user_id, car_id))
             delivery_row = cur.fetchone()
+            if car_id_raw == "0":
+
+                # ищем записи с car_id IS NULL
+                update_query = '''
+                        UPDATE bookings
+                        SET status = 'confirmed'
+                        WHERE service = ? AND user_id = ? AND date = ? AND time = ?
+                    '''
+                params = (service, telegram_id, date_str, time_str)
+                print(params)
+            else:
+                update_query = '''
+                        UPDATE bookings
+                        SET status = 'confirmed'
+                        WHERE service = ? AND car_id = ? AND user_id = ? AND date = ? AND time = ?
+                    '''
+                params = (service, car_id, telegram_id, date_str, time_str)
+            print(service, car_id, telegram_id, date_str, time_str)
+            cur.execute(update_query, params)
+            conn.commit()
+
             conn.close()
 
         service_display = {
@@ -3119,20 +6571,23 @@ def handle_paid_delivery(call):
     bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("reject_"))
-def start_reject_reason_input(call):
+@bot.callback_query_handler(func=lambda call: call.data.startswith("reject_") and call.data.count("_") == 2)
+def start_reject_decision(call):
     try:
         parts = call.data.split("_")
-        if len(parts) != 3:
-            bot.answer_callback_query(call.id, "❌ Неверный формат данных.")
-            return
-
         _, car_id_str, telegram_id_str = parts
+
         car_id = int(car_id_str)
         telegram_id = int(telegram_id_str)
         admin_id = call.from_user.id
 
-        # Создаём reject_buffer, если его нет
+        # Убираем кнопки с исходного сообщения
+        try:
+            bot.edit_message_reply_markup(chat_id=telegram_id, message_id=call.message.message_id, reply_markup=None)
+        except Exception as e:
+            print(f"Ошибка при удалении кнопок: {e}")
+
+        # Сохраняем данные
         global reject_buffer
         if "reject_buffer" not in globals():
             reject_buffer = {}
@@ -3144,15 +6599,70 @@ def start_reject_reason_input(call):
             "message_id": call.message.message_id
         }
 
+        # Вопрос админу
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("✅ Да, документы в порядке", callback_data=f"reject_docs_ok_{admin_id}"),
+            types.InlineKeyboardButton("❌ Нет, документы не подходят", callback_data=f"reject_docs_bad_{admin_id}")
+        )
+
+        bot.send_message(admin_id, "📄 Документы клиента в порядке?", reply_markup=markup)
         bot.answer_callback_query(call.id)
-        bot.send_message(admin_id, "✏️ Напишите причину отказа:")
 
     except Exception as e:
-        bot.answer_callback_query(call.id, "Ошибка при начале ввода причины.")
-        print(f"[ERROR in start_reject_reason_input]: {e}")
+        bot.answer_callback_query(call.id, "Ошибка при начале отказа.")
+        print(f"[ERROR in start_reject_decision]: {e}")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("reject_docs_ok_"))
+def ask_reject_reason(call):
+    admin_id = int(call.data.split("_")[-1])
 
+    if admin_id not in reject_buffer:
+        bot.send_message(admin_id, "⚠️ Нет активного отказа.")
+        return
 
-# 👇 Обработка текста причины отказа
+    bot.send_message(admin_id, "✏️ Напишите причину отказа:")
+    bot.answer_callback_query(call.id)
+    try:
+        bot.delete_message(chat_id=admin_id, message_id=call.message.message_id)
+    except Exception as e:
+        print(f"Ошибка при удалении исходного сообщения клиента: {e}")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("reject_docs_bad_"))
+def reject_due_to_documents(call):
+    try:
+        admin_id = int(call.data.split("_")[-1])
+        data = reject_buffer.get(admin_id)
+        if not data:
+            bot.send_message(admin_id, "⚠️ Данные не найдены.")
+            return
+
+        telegram_id = data["telegram_id"]
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Удаляем фото
+        cursor.execute("""
+            UPDATE users
+            SET driver_license_photo = NULL,
+                passport_front_photo = NULL,
+                passport_back_photo = NULL
+            WHERE telegram_id = ?
+        """, (telegram_id,))
+
+        conn.commit()
+        conn.close()
+
+        bot.send_message(admin_id, "📁 Документы клиента удалены.")
+        bot.send_message(admin_id, "✏️ Теперь напишите причину отказа:")
+
+        bot.answer_callback_query(call.id)
+        try:
+            bot.delete_message(chat_id=admin_id, message_id=call.message.message_id)
+        except Exception as e:
+            print(f"Ошибка при удалении исходного сообщения клиента: {e}")
+    except Exception as e:
+        bot.send_message(call.from_user.id, "❌ Ошибка при удалении документов.")
+        print(f"[ERROR in reject_due_to_documents]: {e}")
 @bot.message_handler(func=lambda message: message.from_user.id in globals().get("reject_buffer", {}))
 def handle_reject_reason(message):
     admin_id = message.from_user.id
@@ -3182,6 +6692,14 @@ def handle_reject_reason(message):
             WHERE user_id = ? AND (car_id = ? OR ? = 0)
         """, (telegram_id, car_id, car_id))
 
+        if car_id is not None:
+            cursor.execute("""
+                DELETE FROM rental_history
+                WHERE user_id = ? AND car_id = ? AND status = 'confirmed'
+            """, (telegram_id, car_id))
+            print(
+                f"[cancel_expired_bookings] 📄 rental_history удалена для user_id={telegram_id}, car_id={car_id}, status='confirmed'")
+
         conn.commit()
         conn.close()
 
@@ -3189,7 +6707,13 @@ def handle_reject_reason(message):
         bot.send_message(telegram_id, f"❌ Ваша заявка отклонена.\nПричина: {reason}")
 
         # 4. Удаляем inline-кнопки
-        bot.edit_message_reply_markup(chat_id, msg_id, reply_markup=None)
+        try:
+            bot.edit_message_reply_markup(chat_id, msg_id, reply_markup=None)
+        except telebot.apihelper.ApiTelegramException as e:
+            if "message is not modified" in str(e):
+                pass  # кнопки уже удалены — ничего не делаем
+            else:
+                raise e  # пробрасываем остальные ошибки
 
         # 5. Подтверждаем админу
         bot.send_message(admin_id, "✅ Причина отправлена и заявка удалена.")
@@ -3293,7 +6817,293 @@ def delete_user_from_db(phone_number):
     conn.commit()
     conn.close()
 
+@bot.callback_query_handler(func=lambda call: call.data == "admin_avtopark")
+def admin_view_all_cars(call):
+    user_id = call.from_user.id
+    chat_id = call.message.chat.id
 
+    if user_id not in ADMIN_ID:
+        bot.send_message(chat_id, "❌ У вас нет доступа к этой команде.")
+        return
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT car_id, brand_model, year, number, is_available, price, station, service, is_broken, fix_date
+        FROM cars
+    """)
+    cars = cursor.fetchall()
+    conn.close()
+
+    if not cars:
+        bot.send_message(chat_id, "🚫 В базе данных нет машин.")
+        return
+
+    for car_id, brand_model, year, number, is_available, price, station, service, is_broken, fix_date in cars:
+        status = "🟢 Свободна" if is_available else "🔴 Занята"
+        service_label = {
+            "rent": "Аренда",
+            "rental": "Прокат",
+            "gazel": "Газель"
+        }.get(service, service)
+
+        broken_text = "❌ Сломана" if is_broken else "✅ Исправна"
+        fix_date_str = f"\n🛠 Починка: {fix_date}" if fix_date else ""
+
+        # Перевод станции
+        station_name = STATION_NAMES.get(station, station)
+
+        text = (
+            f"<b>№{car_id}</b>\n"
+            f"<b>{brand_model}</b> ({year})\n"
+            f"Номер: {number}\n"
+            f"Статус: {status}\n"
+            f"{broken_text}{fix_date_str}\n"
+            f"Цена: {price}₽\n"
+            f"Станция: {station_name}\n"
+            f"Услуга: {service_label}"
+        )
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("🗑 Удалить", callback_data=f"deletecar_{car_id}"),
+            types.InlineKeyboardButton(
+                "🔓 Сделать доступной" if not is_available else "🔒 Сделать недоступной",
+                callback_data=f"togglecar_{car_id}_{int(not is_available)}"
+            ),
+            types.InlineKeyboardButton("💸 Сменить цену", callback_data=f"changeprice_{brand_model}_{year}_{service}")
+        )
+        markup.add(
+            types.InlineKeyboardButton("🛠 Изменить станцию", callback_data=f"editstation_{car_id}"),
+            types.InlineKeyboardButton(
+                "🔧 Статус: Сломана" if is_broken else "✅ Статус: Исправна",
+                callback_data=f"togglebroken_{car_id}_{int(not is_broken)}"
+            )
+        )
+
+        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
+    # Кнопка обновления
+    refresh_markup = types.InlineKeyboardMarkup()
+    refresh_markup.add(types.InlineKeyboardButton("🔄 Обновить", callback_data="refresh_admin_cars"))
+    bot.send_message(chat_id, "📋 Нажмите, чтобы обновить список машин", reply_markup=refresh_markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("togglebroken_"))
+def toggle_car_broken_status(call):
+    _, car_id, new_status = call.data.split("_")
+    car_id = int(car_id)
+    new_status = int(new_status)
+
+    if new_status == 1:
+        # Сломана — запрашиваем дату ремонта
+        msg = bot.send_message(call.message.chat.id,
+                               "📆 Укажите дату починки авто в формате <b>ДД.ММ.ГГГГ</b>:",
+                               parse_mode="HTML")
+        bot.register_next_step_handler(msg, save_broken_status_with_date, car_id)
+    else:
+        # Исправна — просто сбрасываем
+        with sqlite3.connect("cars.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE cars SET is_broken = 0 AND is_available = 0, fix_date = NULL WHERE car_id = ?", (car_id,))
+            conn.commit()
+        bot.answer_callback_query(call.id, "✅ Машина теперь отмечена как исправная.")
+        # admin_view_all_cars(call.message, user_id=call.from_user.id)
+
+def save_broken_status_with_date(message, car_id):
+    date_text = message.text.strip()
+    try:
+        parsed_date = datetime.strptime(date_text, "%d.%m.%Y").date()
+    except ValueError:
+        msg = bot.send_message(message.chat.id, "❌ Неверный формат. Введите дату как <b>ДД.ММ.ГГГГ</b>:", parse_mode="HTML")
+        bot.register_next_step_handler(msg, save_broken_status_with_date, car_id)
+        return
+
+    with sqlite3.connect("cars.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE cars SET is_broken = 1, fix_date = ? WHERE car_id = ?
+        """, (parsed_date.strftime("%Y-%m-%d"), car_id))
+        conn.commit()
+
+    bot.send_message(message.chat.id, f"✅Машина отмечена как сломанная до {parsed_date.strftime('%d.%m.%Y')}")
+    # admin_view_all_cars(message, user_id=message.from_user.id)
+
+
+
+
+# ✅ Обработка запроса на ввод даты ремонта
+@bot.callback_query_handler(func=lambda call: call.data.startswith("editfixdate_"))
+def ask_fix_date(call):
+    car_id = int(call.data.split("_")[1])
+    msg = bot.send_message(call.message.chat.id,
+                           "📅 Введите дату ремонта в формате <b>ДД.ММ.ГГГГ</b>:",
+                           parse_mode="HTML")
+    bot.register_next_step_handler(msg, save_fix_date, car_id)
+
+
+# ✅ Сохранение fix_date
+def save_fix_date(message, car_id):
+    date_text = message.text.strip()
+    try:
+        parsed_date = datetime.strptime(date_text, "%d.%m.%Y").date()
+    except ValueError:
+        msg = bot.send_message(message.chat.id, "❌ Неверный формат даты. Попробуйте снова (ДД.ММ.ГГГГ):")
+        bot.register_next_step_handler(msg, save_fix_date, car_id)
+        return
+
+    with sqlite3.connect("cars.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE cars SET fix_date = ? AND is_available = 0 WHERE car_id = ?", (parsed_date.strftime("%Y-%m-%d"), car_id))
+        conn.commit()
+
+    bot.send_message(message.chat.id, f"✅ Дата ремонта сохранена: {parsed_date.strftime('%d.%m.%Y')}")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("editstation_"))
+def handle_edit_station(call):
+    car_id = call.data.split("_")[1]
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("Южное шоссе 129", callback_data=f"stationset_{car_id}_Южное шоссе 129"),
+        types.InlineKeyboardButton("Южное шоссе 12/2", callback_data=f"stationset_{car_id}_Южное шоссе 12/2"),
+        types.InlineKeyboardButton("Лесная 66А", callback_data=f"stationset_{car_id}_Лесная 66А"),
+        types.InlineKeyboardButton("Борковская 72/1", callback_data=f"stationset_{car_id}_Борковская 72/1"),
+    )
+    bot.edit_message_text(
+        "🏁 Выберите новую станцию:",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("stationset_"))
+def handle_station_set(call):
+    _, car_id, new_station = call.data.split("_", 2)
+
+    with sqlite3.connect("cars.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE cars SET station = ? WHERE car_id = ?", (new_station, car_id))
+        conn.commit()
+
+    bot.edit_message_text(
+        f"✅ Станция успешно обновлена на: <b>{new_station}</b>",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        parse_mode="HTML"
+    )
+@bot.callback_query_handler(func=lambda call: call.data == "refresh_admin_cars")
+def refresh_admin_cars(call):
+    admin_view_all_cars(call)
+    bot.answer_callback_query(call.id, "🔄 Список обновлён")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("deletecar_"))
+def delete_car(call):
+    car_id = call.data.split("_")[1]
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        # Удаляем связанные записи в зависимых таблицах
+        cursor.execute("DELETE FROM bookings WHERE car_id = ?", (car_id,))
+        cursor.execute("DELETE FROM rental_history WHERE car_id = ?", (car_id,))
+
+        # Теперь можно удалить саму машину
+        cursor.execute("DELETE FROM cars WHERE car_id = ?", (car_id,))
+        conn.commit()
+
+        bot.edit_message_text("🗑 Машина удалена.", call.message.chat.id, call.message.message_id)
+        bot.answer_callback_query(call.id, "Машина успешно удалена.")
+    except sqlite3.IntegrityError as e:
+        bot.answer_callback_query(call.id, f"Ошибка при удалении: {e}")
+    finally:
+        conn.close()
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("togglecar_"))
+def toggle_car_availability(call):
+    parts = call.data.split("_")
+    car_id = parts[1]
+    new_status = int(parts[2])
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE cars SET is_available = ? WHERE car_id = ?", (new_status, car_id))
+    conn.commit()
+    conn.close()
+
+    status_msg = "Теперь машина доступна ✅" if new_status else "Теперь машина недоступна ❌"
+    bot.edit_message_text(status_msg, call.message.chat.id, call.message.message_id)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("changeprice_"))
+def change_price_prompt(call):
+    _, brand_model, year, service = call.data.split("_")
+    user_id = call.from_user.id
+
+    session = get_session(user_id)
+    session["change_price_target"] = (brand_model, year, service)
+
+    # Словарь перевода сервиса
+    service_display = {
+        "rent": "аренда",
+        "rental": "прокат",
+        "gazel": "газель"
+    }.get(service, service)
+
+    bot.send_message(
+        call.message.chat.id,
+        f"Введите новую цену для всех <b>{brand_model}</b> ({year}), услуга: <b>{service_display}</b>",
+        parse_mode="HTML"
+    )
+    set_state(user_id, "awaiting_new_price")
+    bot.answer_callback_query(call.id)
+
+@bot.message_handler(func=lambda m: get_state(m.chat.id) == "awaiting_new_price")
+def apply_new_price(message):
+    # если юзер прислал команду — отдадим её другим хендлерам
+    if message.text.startswith("/"):
+        return
+
+    session = get_session(message.chat.id)
+
+    try:
+        new_price = int(message.text.strip())
+    except ValueError:
+        bot.send_message(message.chat.id, "Введите корректное число.")
+        return
+
+    brand_model, year, service = session.get("change_price_target", (None, None, None))
+    if not brand_model or not year or not service:
+        bot.send_message(message.chat.id, "⚠️ Ошибка. Данные не найдены.")
+        # сбрасываем состояние, чтобы не застрять
+        session["state"] = None
+        return
+
+    # Словарь для отображения сервиса на русском
+    service_display = {
+        "rent": "аренда",
+        "rental": "прокат",
+        "gazel": "газель"
+    }.get(service, service)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE cars SET price = ?
+        WHERE brand_model = ? AND year = ? AND service = ?
+    """, (new_price, brand_model, year, service))
+    conn.commit()
+    conn.close()
+
+    bot.send_message(
+        message.chat.id,
+        f"✅ Цена обновлена: <b>{new_price}₽</b>\n"
+        f"Модель: <b>{brand_model}</b>, Год: <b>{year}</b>, Услуга: <b>{service_display}</b>",
+        parse_mode="HTML"
+    )
+
+    # аккуратно очищаем только state и таргет
+    session["state"] = None
+    session.pop("change_price_target", None)
 
 @bot.message_handler(commands=['clear_users'])
 def clear_users(message):
@@ -3314,22 +7124,21 @@ def clear_users(message):
     finally:
         conn.close()
 
+# @bot.callback_query_handler(func=lambda call: call.data == "rent")
+# def handle_rent(call):
+#     bot.answer_callback_query(call.id)
+#     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+#     markup.add("🚗 Смотреть машины", "❓ Вопросы")
+#     bot.send_message(call.message.chat.id,
+#                              f"Хорошо а теперь выберите то что вас интересует",
+#                              reply_markup=markup)
+
+
+
+
 @bot.callback_query_handler(func=lambda call: call.data == "rent")
-def handle_rent(call):
-    bot.answer_callback_query(call.id)
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    markup.add("🚗 Смотреть машины", "❓ Вопросы")
-    bot.send_message(call.message.chat.id,
-                             f"Хорошо а теперь выберите то что вас интересует",
-                             reply_markup=markup)
-
-
-
-
-@bot.message_handler(func=lambda message: message.text == "🚗 Смотреть машины")
-def handle_show_cars(message):
-    # Вызов команды просмотра машин
-    choose_service_type(message)
+def handle_show_cars(call):
+    choose_service_type(call.message)
 
 @bot.message_handler(func=lambda message: message.text == "❓ Вопросы")
 def handle_show_questions(message):
@@ -3462,27 +7271,48 @@ def admin_add_car_id(message):
     # Сохраняем car_id в сессию
     session["number"] = car_id
 
+    bot.send_message(message.chat.id, "Выберите станцию для автомобиля:", reply_markup=generate_station_keyboard())
+    set_state(message.chat.id, "admin_add_car_station")
+
+@bot.message_handler(func=lambda m: get_state(m.chat.id) == "admin_add_car_station")
+def admin_add_car_station(message):
+    session = get_session(message.chat.id)
+    station = message.text.strip()
+
+    valid_stations = [
+        "Южное шоссе 129",
+        "Южное шоссе 12/2",
+        "Лесная 66А",
+        "Борковская 72/1"
+    ]
+
+    if station not in valid_stations:
+        bot.send_message(message.chat.id, "❌ Пожалуйста, выберите станцию из предложенных кнопок.")
+        return
+
+    session["station"] = station
     bot.send_message(message.chat.id, "Отправьте фото машины:")
     set_state(message.chat.id, "admin_add_car_photo")
+
 @bot.message_handler(func=lambda m: get_state(m.chat.id) == "admin_add_car_photo", content_types=['photo'])
 def admin_add_car_photo(message):
     session = get_session(message.chat.id)
     photo_id = message.photo[-1].file_id
     session["photo"] = photo_id
-    print(session.get("model"))
     # Сохраняем в БД
     conn = sqlite3.connect("cars.db")
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO cars (number, brand_model, year, transmission, photo_url, service)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO cars (number, brand_model, year, transmission, photo_url, service, station)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     ''', (
         session.get("number"),
         session.get("model"),
         session.get("year"),
         session.get("transmission"),
         photo_id,
-        session.get("service")
+        session.get("service"),
+        session.get("station")
     ))
     conn.commit()
     conn.close()
@@ -3493,23 +7323,76 @@ def admin_add_car_photo(message):
         f"<b>Модель:</b> {session.get('model')}\n"
         f"<b>Год:</b> {session.get('year')}\n"
         f"<b>Коробка:</b> {session.get('transmission')}\n"
-        f"<b>Тип услуги:</b> {session.get('service')}")
+        f"<b>Тип услуги:</b> {session.get('service')}\n"
+        f"<b>Станция:</b> {session.get('station')}"
+    )
     bot.send_message(message.chat.id, f"✅ Машина добавлена:\n\n{text}", parse_mode="HTML")
     bot.send_photo(message.chat.id, photo_id)
 
-    # Очистка сессии
+    # Очистка
     user_sessions.pop(message.chat.id, None)
+
+
+def generate_station_keyboard():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    stations = [
+        "Южное шоссе 129",
+        "Южное шоссе 12/2",
+        "Лесная 66А",
+        "Борковская 72/1"
+    ]
+    for s in stations:
+        markup.add(s)
+    return markup
+
 
 @bot.message_handler(commands=['available_cars'])
 def choose_service_type(message):
+    user_id = message.from_user.id
+    session = get_session(user_id)
+    # Сброс выбранных ранее данных
+    session.pop("selected_service", None)
+    session.pop("car_purpose", None)
+
     markup = types.InlineKeyboardMarkup()
     markup.add(
-        types.InlineKeyboardButton("🚗 Аренда", callback_data="service_rent"),
-        types.InlineKeyboardButton("🏁 Прокат", callback_data="service_rental")
+        types.InlineKeyboardButton("👤 Для личного пользования", callback_data="target_personal"),
+        types.InlineKeyboardButton("🚖 Для работы в такси", callback_data="target_taxi")
     )
-    bot.send_message(message.chat.id, "Выберите тип услуги:", reply_markup=markup)
+    bot.send_message(message.chat.id, "Для чего вам автомобиль?", reply_markup=markup)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("target_"))
+def handle_purpose_selection(call):
+    user_id = call.from_user.id
+    session = get_session(user_id)
 
+    purpose_key = call.data.split("_")[1]  # personal или taxi
+    bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=None)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE users
+        SET purpose = ?
+        WHERE telegram_id = ?
+    ''', (purpose_key, user_id))
+    conn.commit()
 
+    # Ответ пользователю
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        "Выберите тип услуги:",
+        reply_markup=get_service_type_markup()
+    )
+
+def get_service_type_markup():
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("🚗 Долгосрочная аренда", callback_data="service_rent"))
+
+    markup.add(
+        types.InlineKeyboardButton("🏁 Посуточная аренда", callback_data="service_rental")
+    )
+    return markup
 @bot.callback_query_handler(func=lambda call: call.data.startswith("service_"))
 def show_available_cars(call):
     user_id = call.from_user.id
@@ -3529,9 +7412,11 @@ def show_available_cars(call):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT car_id, brand_model, year 
-        FROM cars 
+        SELECT MIN(car_id), brand_model, year
+        FROM cars
         WHERE is_available = 1 AND LOWER(service) = ?
+        GROUP BY brand_model, year
+        ORDER BY MIN(price) ASC
     """, (service_key,))
     cars = cursor.fetchall()
     conn.close()
@@ -3543,29 +7428,37 @@ def show_available_cars(call):
 
     # Показ фильтра если машин больше 5
     service_titles = {
-        "rent": "АРЕНДЫ",
-        "rental": "ПРОКАТА"
+        "rent": "долгосрочной аренды",
+        "rental": "посуточной аренды"
     }
 
     service_name = service_titles.get(service_key, service_key.upper())  # на случай, если ключ не в словаре
 
-    if len(cars) > 5:
-        filter_markup = types.InlineKeyboardMarkup()
-        filter_markup.add(types.InlineKeyboardButton("🔎 Фильтр", callback_data="start_filter"))
-        bot.send_message(chat_id, f"📋 Машины для: {service_name}", reply_markup=filter_markup)
-    else:
-        bot.send_message(chat_id, f"📋 Машины для: {service_name}")
+    # if len(cars) > 5:
+    #     filter_markup = types.InlineKeyboardMarkup()
+    #     filter_markup.add(types.InlineKeyboardButton("🔎 Фильтр", callback_data="start_filter"))
+    #     bot.send_message(chat_id, f"📋 Машины для: {service_name}", reply_markup=filter_markup)
+    # else:
+    bot.send_message(chat_id, f"📋 Машины для: {service_name}")
 
     session["car_message_ids"] = []
 
     for car_id, brand_model, year in cars:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT photo_url, price, transmission FROM cars WHERE car_id = ?", (car_id,))
+        photo_url, price, transmission = cursor.fetchone()
+        conn.close()
+
+        caption = f"<b>{brand_model}</b> ({year})\n Коробка: {transmission}\n💰 {price}₽/день"
+
         markup = types.InlineKeyboardMarkup()
-        markup.add(
-            types.InlineKeyboardButton("ℹ️ Подробнее", callback_data=f"details_{car_id}"),
-            types.InlineKeyboardButton("🚗 Выбрать", callback_data=f"choose_{car_id}"),
-            types.InlineKeyboardButton("💰 Цена", callback_data=f"price_{car_id}")
-        )
-        sent_msg = bot.send_message(chat_id, f"{brand_model} ({year})", reply_markup=markup)
+        markup.add(types.InlineKeyboardButton("🚗 Выбрать", callback_data=f"choose_{car_id}"))
+
+        if service_key == "rental":
+            markup.add(types.InlineKeyboardButton("📅 Рассчитать цену", callback_data=f"price_{car_id}"))
+
+        sent_msg = bot.send_photo(chat_id, photo=photo_url, caption=caption, parse_mode="HTML", reply_markup=markup)
         session["car_message_ids"].append(sent_msg.message_id)
 
     bot.answer_callback_query(call.id)
@@ -3588,7 +7481,11 @@ def handle_inline(call):
     if action == "price":
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT brand_model, year, service FROM cars WHERE car_id = ?", (car_id,))
+        cursor.execute("""
+            SELECT brand_model, year, service, price 
+            FROM cars 
+            WHERE car_id = ?
+        """, (car_id,))
         car = cursor.fetchone()
         conn.close()
 
@@ -3596,23 +7493,23 @@ def handle_inline(call):
             bot.send_message(chat_id, "🚫 Машина не найдена.")
             return
 
-        brand_model, year, service = car
-        print(service)
+        brand_model, year, service, price = car
+
         if service == "rent":
-            price = TARIFFS.get(service, {}).get(brand_model, {}).get(year)
             if price:
-                bot.send_message(chat_id, f"💰 Цена за сутки аренды {brand_model} ({year}) составляет {price}₽.")
+                bot.send_message(chat_id, f"💰 Цена за сутки аренды {brand_model} ({year}): <b>{price}₽</b>",
+                                 parse_mode="HTML")
             else:
-                bot.send_message(chat_id, f"❌ Нет данных о цене аренды для {brand_model} ({year}).")
+                bot.send_message(chat_id, f"❌ Цена аренды для {brand_model} ({year}) не указана.")
 
         elif service == "rental":
             session["awaiting_days_for_car"] = car_id
             bot.send_message(chat_id, f"📅 На сколько дней хотите взять {brand_model}?")
+
         else:
             bot.send_message(chat_id, "❌ Тип услуги не распознан.")
         return
 
-    # details / choose общая часть: получаем авто
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -3641,34 +7538,56 @@ def handle_inline(call):
 
 
 
-
-
     elif action == "choose":
-
-        # Получаем Telegram ID пользователя
 
         telegram_id = call.from_user.id
 
-        # Проверка: есть ли уже активная аренда у пользователя
+        user_id = telegram_id
+
+        chat_id = call.message.chat.id
+        try:
+            bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
+        except Exception as e:
+            print(f"Ошибка при удалении кнопок: {e}")
+        # Проверка: есть ли уже аренда и документы
 
         with sqlite3.connect("cars.db") as conn:
 
             cursor = conn.cursor()
 
-            cursor.execute("SELECT status FROM users WHERE telegram_id = ?", (telegram_id,))
+            cursor.execute(
+
+                "SELECT status, driver_license_photo, passport_front_photo, passport_back_photo FROM users WHERE telegram_id = ?",
+
+                (telegram_id,)
+
+            )
 
             row = cursor.fetchone()
 
-        if row and row[0] != "new":
+        if not row:
+            bot.send_message(chat_id, "❌ Пользователь не найден.")
+
+            return
+
+        status, dl_photo, pass_front, pass_back = row
+
+        if status != "new":
             bot.send_message(chat_id, "🚫 У вас уже есть арендованная машина. Сначала завершите текущую аренду.")
 
             return
 
-        # Продолжение логики выбора машины
-
         session["car_id"] = car_id
 
-        session["state"] = "waiting_for_photo"
+        # Разветвление по типу услуги
+
+        service = session.get("selected_service")
+
+        print(service)
+
+
+
+        # Удаляем старые карточки машин
 
         current_msg_id = call.message.message_id
 
@@ -3685,22 +7604,125 @@ def handle_inline(call):
                     print(f"Ошибка удаления карточки: {e}")
 
         session.pop("car_message_ids", None)
+        if service == "rental":
+            session["selected_car_id"] = car_id
+            session["state"] = "waiting_for_rental_start"
 
-        service = session.get("selected_service")
+            bot.send_message(
+                chat_id,
+                "Теперь выберите дату для бронирования:",
+                reply_markup=create_calendar_markup(car_id)  # ← передаём car_id
+            )
+            return
+        # Получаем марку и год, затем станции
 
-        if not service:
-            bot.send_message(chat_id, "Ошибка: не определён тип услуги.")
+        with sqlite3.connect("cars.db") as conn:
 
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT brand_model, year FROM cars WHERE car_id = ?", (car_id,))
+
+            car = cursor.fetchone()
+
+            if not car:
+                bot.send_message(chat_id, "❌ Машина не найдена.")
+
+                return
+
+            brand_model, year = car
+
+            cursor.execute("""
+
+                SELECT DISTINCT station FROM cars
+
+                WHERE brand_model = ? AND year = ? AND is_available = 1
+
+            """, (brand_model, year))
+
+            stations = [row[0] for row in cursor.fetchall() if row[0]]
+
+
+        markup = types.InlineKeyboardMarkup()
+
+        for station in stations:
+            markup.add(types.InlineKeyboardButton(text=station, callback_data=f"carstation_{station}"))
+
+        bot.send_message(chat_id, "📍 Выберите станцию, с которой хотите забрать машину:", reply_markup=markup)
+
+
+    else:
+
+        bot.send_message(chat_id, "⚠️ У этой машины не указана станция.")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("carstation_"))
+def handle_station_choice(call):
+    user_id = call.from_user.id
+    print(user_id)
+    chat_id = call.message.chat.id
+    session = get_session(user_id)
+    service = session.get("selected_service")
+    station = call.data.replace("carstation_", "")
+    if service == 'rental':
+        price = session.get("price")
+        rent_start = session.get("rent_start")
+        rent_end = session.get("rent_end")
+        db_user_id = session.get("db_user_id")
+        print(rent_start, rent_end)
+        if not all([ price, rent_start, rent_end, db_user_id]):
+            missing = []
+            if not price: missing.append("price")
+            if not rent_start: missing.append("rent_start")
+            if not rent_end: missing.append("rent_end")
+            if not db_user_id: missing.append("db_user_id")
+            bot.send_message(chat_id, f"❌ Ошибка: отсутствуют данные: {', '.join(missing)}")
+            return
+        free_car_ids = session.get("free_car_ids", {})
+        if station not in free_car_ids:
+            bot.send_message(chat_id, "❌ Ошибка: станция не найдена или машина уже недоступна.")
             return
 
-        user_data.setdefault(user_id, {})["selected_job"] = service
+        selected_car_id = free_car_ids[station]
+        print(selected_car_id)
+        with sqlite3.connect("cars.db") as conn:
+            cursor = conn.cursor()
+            print(selected_car_id)
+            start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute('''
+                    INSERT INTO rental_history (user_id, car_id, rent_start, rent_end, price, end_time, start_time, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (user_id, selected_car_id, rent_start, rent_end, price, rent_end, start_time, 'confirmed'))
+            conn.commit()
+            print("✅ Данные вставлены в rental_history!")
+    else:
+        selected_car_id = session.get("car_id")
+    session["car_id"] = selected_car_id
+    session["selected_station"] = station
+    for key in ["price", "rent_start_str", "rent_end_str", "db_user_id"]:
+        session.pop(key, None)
+    bot.answer_callback_query(call.id)
+    try:
+        bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
+    except:
+        pass
 
+    bot.send_message(chat_id, f"✅ Вы выбрали станцию: {station}")
+
+    # Тут проверка документов
+    with sqlite3.connect("cars.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT driver_license_photo, passport_front_photo, passport_back_photo
+            FROM users WHERE telegram_id = ?
+        """, (user_id,))
+        row = cursor.fetchone()
+
+    if row and all(row):
+        bot.send_message(chat_id, "✅ Документы уже есть. Переходим к оформлению.")
+        post_photo_processing(user_id, chat_id, session)
+    else:
+        session["state"] = "waiting_for_photo"
         bot.send_message(chat_id, "📸 Пожалуйста, отправьте фотографию водительского удостоверения.")
-# elif service == "rental":
-# session["selected_car_id"] = car_id
-# session["state"] = "waiting_for_rental_start"
-# bot.send_message(chat_id, "Теперь выберите дату для бронирования:",
-#                  reply_markup=create_calendar_markup())
 @bot.message_handler(func=lambda message: get_session(message.from_user.id).get("awaiting_days_for_car"))
 def handle_rental_days(message):
     user_id = message.from_user.id
@@ -3709,14 +7731,16 @@ def handle_rental_days(message):
     try:
         days = int(message.text)
         car_id = int(session["awaiting_days_for_car"])
+        if days <= 0:
+            raise ValueError
     except (ValueError, KeyError):
-        bot.send_message(message.chat.id, "Введите число дней, например: 3")
+        bot.send_message(message.chat.id, "Введите корректное число дней, например: 3")
         return
 
-    # Получаем модель авто
+    # Получаем модель авто и базовую цену
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT brand_model FROM cars WHERE car_id = ?", (car_id,))
+    cursor.execute("SELECT brand_model, price FROM cars WHERE car_id = ?", (car_id,))
     row = cursor.fetchone()
     conn.close()
 
@@ -3724,27 +7748,38 @@ def handle_rental_days(message):
         bot.send_message(message.chat.id, "🚫 Машина не найдена.")
         return
 
-    brand_model = row[0]
-    tariffs = TARIFFS.get("Прокат", {}).get(brand_model)
+    brand_model, base_price = row
 
-    if not tariffs:
-        bot.send_message(message.chat.id, f"❌ Нет тарифов для модели {brand_model}.")
+    if not base_price:
+        bot.send_message(message.chat.id, f"❌ Не указана цена для модели {brand_model}.")
         return
 
-    # Поиск ближайшего тарифа
-    best_match = min(tariffs.keys(), key=lambda d: abs(days - d))
-    price = tariffs[best_match]
+    # Применение скидки в зависимости от количества дней
+    if 1 <= days <= 6:
+        daily_price = base_price
+    elif 7 <= days <= 13:
+        daily_price = base_price - 100
+    elif 14 <= days <= 20:
+        daily_price = base_price - 200
+    elif 21 <= days <= 27:
+        daily_price = base_price - 300
+    else:  # от 28 и выше
+        daily_price = base_price - 400
 
-    total = price * days
+    if daily_price < 0:
+        daily_price = 0  # защита от отрицательных цен
+
+    total = daily_price * days
+
     bot.send_message(
         message.chat.id,
-        f"💰 Цена за {days} дней: {price}₽/сутки\nИтого: {total}₽."
+        f"💰 Цена аренды <b>{brand_model}</b> на {days} дней:\n"
+        f"{daily_price}₽/сутки × {days} = <b>{total}₽</b>",
+        parse_mode="HTML"
     )
 
     # Очистка временных данных
     session.pop("awaiting_days_for_car", None)
-
-
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("hide_"))
 def hide_message(call):
@@ -3758,7 +7793,6 @@ def hide_message(call):
 def handle_rental_and_rent(call):
     print(f"[DEBUG] callback received: {call.data}")
     action, car_id = call.data.split("_", 1)
-    car_id = int(car_id)
     chat_id = call.message.chat.id
     user_id = call.from_user.id
     session = get_session(user_id)
@@ -3851,14 +7885,28 @@ def rental_days_selected(call):
     bot.answer_callback_query(call.id)
 
 # ➤ Обработка ответа на вопрос "Нужна ли доставка?"
-@bot.message_handler(func=lambda message: get_state(message.from_user.id) == "waiting_for_delivery_choice")
+@bot.message_handler(func=lambda message: get_state(message.chat.id) == "waiting_for_delivery_choice")
 def handle_final_confirmation(message):
     import sqlite3
-    user_id = message.from_user.id
-    print(user_id)
-    chat_id = message.chat.id
-    choice = message.text.strip().lower()
+    user_id = message.chat.id
     session = get_session(user_id)
+    choice = message.text.strip().lower()
+
+    # --- Убираем reply-клавиатуру ---
+    bot.send_message(user_id, "Выбор завершён", reply_markup=types.ReplyKeyboardRemove())
+
+    # --- Убираем inline-кнопки предыдущего сообщения бота, если есть ---
+    last_inline_msg_id = session.get("last_inline_msg_id")  # сохраняй message_id при отправке inline-кнопок
+    if last_inline_msg_id:
+        try:
+            bot.edit_message_reply_markup(
+                chat_id=user_id,
+                message_id=last_inline_msg_id,
+                reply_markup=None
+            )
+        except telebot.apihelper.ApiTelegramException as e:
+            print(f"Не удалось удалить inline-кнопки: {e}")
+        session.pop("last_inline_msg_id", None)
 
     if choice == "да":
         car_id = session.get("car_id")
@@ -3866,48 +7914,127 @@ def handle_final_confirmation(message):
         rent_start = session.get("rent_start")
         rent_end = session.get("rent_end")
         db_user_id = session.get("db_user_id")
-        print(db_user_id, car_id, rent_start, rent_end, price)
+
         if not all([car_id, price, rent_start, rent_end, db_user_id]):
-            missing = []
-            if not car_id: missing.append("car_id")
-            if not price: missing.append("price")
-            if not rent_start: missing.append("rent_start")
-            if not rent_end: missing.append("rent_end")
-            if not db_user_id: missing.append("db_user_id")
-            bot.send_message(chat_id, f"❌ Ошибка: отсутствуют данные: {', '.join(missing)}")
+            missing = [key for key in ["car_id", "price", "rent_start", "rent_end", "db_user_id"] if not session.get(key)]
+            bot.send_message(user_id, f"❌ Ошибка: отсутствуют данные: {', '.join(missing)}")
             return
 
-        # Сохраняем аренду
-        with sqlite3.connect("cars.db") as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO rental_history (user_id, car_id, rent_start, rent_end, price)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (db_user_id, car_id, rent_start, rent_end, price))
-            conn.commit()
-            print("✅ Данные вставлены в rental_history!")
-        # Переход к выбору времени
-        date_str = rent_start.split()[0]  # YYYY-MM-DD
-        service = "rental"
+        # --- Показываем кнопку "📍 Где забрать машину" ---
+        markup = types.InlineKeyboardMarkup()
+        pickup_btn = types.InlineKeyboardButton("📍 Где забрать авто", callback_data=f"pickup_station|{car_id}")
+        markup.add(pickup_btn)
 
-        set_state(user_id, f"waiting_for_time_pick|{service}|{car_id}|{date_str}")
-        bot.send_message(chat_id, "✅ Отлично! Теперь выберите удобное время получения авто:",
-                         reply_markup=create_time_markup_calendar(date_str, car_id))
+        session["selected_car_id"] = car_id
+        session["service"] = "rental"
+        set_state(user_id, "waiting_for_choose_station_pick")
 
-        # Очистка лишнего
-        for key in ["car_id", "price", "rent_start_str", "rent_end_str", "db_user_id"]:
-            session.pop(key, None)
+        sent_msg = bot.send_message(user_id, "✅ Отлично! Остался последний шаг:", reply_markup=markup)
+
+        # Сохраняем message_id для возможности удаления кнопок позже
+        session["last_inline_msg_id"] = sent_msg.message_id
 
     elif choice == "нет":
-        bot.send_message(chat_id, "Хорошо, давайте выберем дату начала заново.")
         set_state(user_id, "waiting_for_rental_start")
-        bot.send_message(chat_id, "📅 Укажите новую дату начала проката:",
-                         reply_markup=create_calendar_markup())
-
+        car_id = session.get("car_id") or session.get("selected_car_id")
+        bot.send_message(user_id, "Хорошо, давайте выберем дату начала заново.")
+        bot.send_message(user_id, "📅 Укажите новую дату начала проката:", reply_markup=create_calendar_markup(car_id))
     else:
-        bot.send_message(chat_id, "Пожалуйста, выберите 'Да' или 'Нет'.")
+        # Если пользователь ввёл что-то другое
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        markup.add("Да", "Нет")
+        bot.send_message(user_id, "Пожалуйста, выберите 'Да' или 'Нет'.", reply_markup=markup)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("pickup_station|"))
+def handle_pickup_station(call):
+    import sqlite3
 
+    car_id = int(call.data.split("|")[1])
+    print(car_id)
+    user_id = call.from_user.id
+    print(user_id)
+    chat_id = call.message.chat.id
+    session = get_session(user_id)
+    try:
+        bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
+    except Exception as e:
+        print(f"Ошибка при удалении кнопок: {e}")
+    car_id = session.get("car_id")
+    print(car_id)
+    price = session.get("price")
+    rent_start = session.get("rent_start")
+    rent_end = session.get("rent_end")
+    db_user_id = session.get("db_user_id")
+    print(rent_start, rent_end)
+    if not all([car_id, price, rent_start, rent_end, db_user_id]):
+        missing = []
+        if not car_id: missing.append("car_id")
+        if not price: missing.append("price")
+        if not rent_start: missing.append("rent_start")
+        if not rent_end: missing.append("rent_end")
+        if not db_user_id: missing.append("db_user_id")
+        bot.send_message(chat_id, f"❌ Ошибка: отсутствуют данные: {', '.join(missing)}")
+        return
 
+    print(rent_start, rent_end)
+    if not rent_start or not rent_end:
+        bot.send_message(chat_id, "❌ Не выбраны даты аренды.")
+        return
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Получаем brand_model и year для исходного car_id
+        cursor.execute("SELECT brand_model, year FROM cars WHERE car_id = ?", (car_id,))
+        car = cursor.fetchone()
+        if not car:
+            bot.send_message(chat_id, "❌ Машина не найдена.")
+            return
+
+        brand_model, year = car["brand_model"], car["year"]
+
+        # Ищем все car_id с этим же brand_model и year, которые свободны на даты
+        cursor.execute("""
+            SELECT car_id, station FROM cars
+            WHERE brand_model = ? AND year = ?
+        """, (brand_model, year))
+        all_cars = cursor.fetchall()
+
+        free_cars = []
+        for row in all_cars:
+            cid = row["car_id"]
+            cursor.execute("""
+                SELECT 1 FROM rental_history
+                WHERE car_id = ?
+                AND status = 'confirmed'
+                AND (
+                    (? BETWEEN rent_start AND rent_end)
+                    OR (? BETWEEN rent_start AND rent_end)
+                    OR (rent_start BETWEEN ? AND ?)
+                    OR (rent_end BETWEEN ? AND ?)
+                )
+            """, (
+                cid,
+                rent_start, rent_end,
+                rent_start, rent_end,
+                rent_start, rent_end
+            ))
+            if not cursor.fetchone():
+                free_cars.append((cid, row["station"]))
+
+    if not free_cars:
+        bot.send_message(chat_id, "🚫 Нет свободных машин этой модели и года на эти даты.")
+        return
+
+    # Сохраняем список свободных car_id в сессию
+    session["free_car_ids"] = {station: cid for cid, station in free_cars}
+
+    # Формируем кнопки станций
+    markup = types.InlineKeyboardMarkup()
+    for station in sorted(set(st for _, st in free_cars if st)):
+        markup.add(types.InlineKeyboardButton(station, callback_data=f"carstation_{station}"))
+
+    bot.send_message(chat_id, "📍 Выберите станцию:", reply_markup=markup)
 def create_time_markup_calendar(date_str, car_id):
     from telebot import types
     import sqlite3
@@ -3922,8 +8049,8 @@ def create_time_markup_calendar(date_str, car_id):
 
     conn.close()
 
-    for hour in range(10, 24):  # с 10:00 до 19:59
-        for minute in range(0, 60, 10):
+    for hour in range(10, 19):  # с 10:00 до 19:59
+        for minute in range(0, 60, 30):
             time_str = f"{hour:02}:{minute:02}"
             if time_str not in booked:
                 callback_data = f"select_time|rental|{car_id}|{date_str}|{time_str}"
@@ -4805,209 +8932,1076 @@ def view_bookings(message):
     for i in range(0, len(text), MAX_LEN):
         bot.send_message(user_id, text[i:i+MAX_LEN], parse_mode="HTML")
 
+from threading import Lock
+notify_lock = Lock()
 
+notify_lock = Lock()
+def send_late_pickup_notifications():
+    today = date.today()
+    today_str = today.strftime("%Y-%m-%d")
+    print("[send_pickup_notifications] Запуск1")
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # === 1. Уведомления для rental ===
+        cursor.execute("""
+            SELECT rh.user_id, rh.car_id, rh.rent_start, b.deposit_status, 
+                   u.telegram_id, b.service, b.date, u.status
+            FROM rental_history rh
+            JOIN bookings b ON rh.user_id = b.user_id AND rh.car_id = b.car_id
+            JOIN users u ON rh.user_id = u.telegram_id
+            WHERE rh.status = 'confirmed'
+              AND b.deposit_status = 'paid'
+              AND rh.rent_start = ?
+              AND u.status = 'waiting_rental'
+              AND b.service = 'rental'
+        """, (today_str,))
+        rental_rows = cursor.fetchall()
+
+        for row in rental_rows:
+            telegram_id = row["telegram_id"]
+            message = (
+                "🚗 Добрый день! Сегодня начинается ваша аренда автомобиля.\n\n"
+                "Вы можете приехать и забрать машину в любое удобное время до 20:00.\n"
+                "⚠️ В 20:00 аренда начнётся автоматически.\n"
+                "Если возникнут вопросы, пожалуйста, свяжитесь с нами.\n\n"
+                "Желаем отличного путешествия!\n"
+                "Нажмите на /go"
+            )
+            bot.send_message(telegram_id, message)
+            cursor.execute("UPDATE users SET status = ? WHERE telegram_id = ?", ('waiting_car', telegram_id))
+
+        # === 2. Уведомления для rent ===
+        cursor.execute("""
+            SELECT b.user_id, b.car_id, b.date, u.telegram_id, u.status
+            FROM bookings b
+            JOIN users u ON b.user_id = u.telegram_id
+            WHERE b.status = 'confirmed'
+              AND b.deposit_status = 'paid'
+              AND b.service = 'rent'
+              AND u.status = 'waiting_rental'
+        """)
+        rent_rows = cursor.fetchall()
+        print(1)
+        for row in rent_rows:
+            booking_date = datetime.strptime(row["date"], "%Y-%m-%d").date()
+            if booking_date + timedelta(days=1) == today:
+                telegram_id = row["telegram_id"]
+                message = (
+                    "🚗 Доброе утро! Сегодня вы можете забрать автомобиль.\n\n"
+                    "С завтрашнего дня аренда начнется автоматически.\n"
+                    "Если возникнут вопросы, пожалуйста, свяжитесь с нами.\n\n"
+                    "Желаем отличного путешествия!\n"
+                    "Нажмите на /go"
+                )
+                bot.send_message(telegram_id, message)
+                cursor.execute("UPDATE users SET status = ? WHERE telegram_id = ?", ('waiting_car', telegram_id))
+
+        conn.commit()
+def send_pickup_notifications():
+    today_str = date.today().strftime("%Y-%m-%d")
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    print("[send_pickup_notifications] Запуск")
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # === УВЕДОМЛЕНИЯ О НАЧАЛЕ АРЕНДЫ ===
+        cursor.execute("""
+            SELECT rh.user_id, rh.car_id, rh.rent_start, b.deposit_status, 
+                   u.telegram_id, b.created_at, u.status
+            FROM rental_history rh
+            JOIN bookings b ON rh.user_id = b.user_id AND rh.car_id = b.car_id
+            JOIN users u ON rh.user_id = u.telegram_id
+            WHERE rh.status = 'confirmed'
+              AND b.deposit_status = 'paid'
+              AND rh.rent_start = ?
+              AND u.status = 'waiting_rental'
+        """, (today_str,))
+        start_rows = cursor.fetchall()
+
+        for row in start_rows:
+            telegram_id = row["telegram_id"]
+            created_at = datetime.strptime(row["created_at"], "%Y-%m-%d %H:%M:%S").date()
+
+            # --- Проверка даты подачи заявки ---
+            if created_at == yesterday:
+                print(f"[START] Пропускаем {telegram_id} — заявка подана вчера ({created_at})")
+                continue
+            elif created_at == today:
+                print(f"[START] Пропускаем {telegram_id} — заявка подана сегодня ({created_at})")
+                continue
+
+            try:
+                message = (
+                    f"🚗 Доброе утро! Сегодня начинается ваша аренда автомобиля.\n\n"
+                    f"Вы можете приехать и забрать машину в любое удобное время до 20:00.\n"
+                    f"⚠️ В 20:00 аренда начнётся автоматически.\n"
+                    f"Если возникнут вопросы, пожалуйста, свяжитесь с нами.\n\n"
+                    f"Желаем отличного путешествия!\n"
+                    f"Нажмите на /go"
+                )
+                bot.send_message(telegram_id, message)
+
+                # Меняем статус
+                cursor.execute("UPDATE users SET status = ? WHERE telegram_id = ?", ('waiting_car', telegram_id))
+                conn.commit()
+            except Exception as e:
+                print(f"[send_pickup_notifications][START] Ошибка отправки {telegram_id}: {e}")
+
+        # === УВЕДОМЛЕНИЯ О КОНЦЕ АРЕНДЫ ===
+        cursor.execute("""
+            SELECT b.user_id, b.car_id, b.created_at, u.telegram_id,
+                   c.brand_model, c.year, rh.rent_end
+            FROM bookings b
+            JOIN rental_history rh ON b.user_id = rh.user_id AND b.car_id = rh.car_id
+            JOIN users u ON b.user_id = u.telegram_id
+            JOIN cars c ON b.car_id = c.car_id
+            WHERE b.service = 'rental'
+              AND b.status = 'process'
+              AND rh.rent_end = ?
+        """, (today_str,))
+        end_rows = cursor.fetchall()
+
+        for row in end_rows:
+            try:
+                telegram_id = row["telegram_id"]
+                brand_model = row["brand_model"]
+                year = row["year"]
+                rent_end = row["rent_end"]
+                created_at = datetime.strptime(row["created_at"], "%Y-%m-%d %H:%M:%S")
+
+                # Время сдачи = дата окончания аренды + время из created_at
+                return_dt = datetime.strptime(rent_end, "%Y-%m-%d").replace(
+                    hour=created_at.hour,
+                    minute=created_at.minute,
+                    second=0
+                )
+                return_time_str = return_dt.strftime("%H:%M")
+
+                kb = types.InlineKeyboardMarkup(row_width=2)
+                kb.add(
+                    types.InlineKeyboardButton("✅ Продлить", callback_data="extend_rental"),
+                    types.InlineKeyboardButton("🕒 Сдам вовремя", callback_data="return_on_time")
+                )
+
+                msg = (
+                    f"📅 Сегодня заканчивается ваша аренда автомобиля <b>{brand_model} ({year})</b>.\n"
+                    f"⏰ Время возврата: <b>{return_time_str}</b>\n\n"
+                    f"Выберите действие:"
+                )
+
+                bot.send_message(telegram_id, msg, parse_mode="HTML", reply_markup=kb)
+
+            except Exception as e:
+                print(f"[send_pickup_notifications][END] Ошибка отправки {telegram_id}: {e}")
+def force_start_rental():
+    today_str = date.today().strftime("%Y-%m-%d")
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        print(1)
+        # Находим арендованные машины на сегодня с залогом и подтверждённой арендой
+        cursor.execute("""
+            SELECT rh.user_id, rh.car_id, rh.rent_start, c.station, c.brand_model, c.year, u.telegram_id
+            FROM rental_history rh
+            JOIN bookings b ON rh.user_id = b.user_id AND rh.car_id = b.car_id
+            JOIN cars c ON rh.car_id = c.car_id
+            JOIN users u ON rh.user_id = u.telegram_id
+            WHERE rh.status = 'confirmed'
+              AND b.deposit_status = 'paid'
+              AND rh.rent_start = ?
+              AND b.status = 'confirmed'
+        """, (today_str,))
+
+        rentals = cursor.fetchall()
+
+        for rental in rentals:
+            user_id = rental["user_id"]
+            car_id = rental["car_id"]
+            car_name = rental["brand_model"]
+            car_year = rental["year"]
+            station = rental["station"]
+            telegram_id = rental["telegram_id"]
+
+            # 1. Обновляем статус аренды как "в процессе"
+            cursor.execute("""
+                UPDATE rental_history SET status = 'confirmed', end_time = ?
+                WHERE user_id = ? AND car_id = ? AND rent_start = ?
+            """, (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id, car_id, today_str))
+
+            conn.commit()
+
+            # 2. Отправляем уведомление клиенту
+            try:
+                msg = (
+                    f"🚗 Ваша аренда автомобиля <b>{car_name} ({car_year})</b> на станции <b>{station}</b> "
+                    f"была автоматически запущена в 20:00.\n\n"
+                    f"❗️Пожалуйста, как можно скорее подойдите к машине или свяжитесь с администратором, "
+                    f"если у вас изменились планы."
+                )
+                bot.send_message(telegram_id, msg, parse_mode="HTML")
+            except Exception as e:
+                print(f"[force_start_rental] Ошибка отправки клиенту {telegram_id}: {e}")
+
+
+
+
+def get_session2(chat_id):
+    if chat_id not in session:
+        session[chat_id] = {}  # всегда создаём словарь
+    return session[chat_id]
+
+def get_state2(chat_id):
+    return get_session(chat_id).get("state")
+
+def set_state2(chat_id, state_value):
+    get_session(chat_id)["state"] = state_value
+
+# -------------------------------
+# Калькулятор цены
+# -------------------------------
+
+# Обработчик выбора "Продлить посуточно"
+@bot.callback_query_handler(func=lambda call: call.data in ["extend_rental", "return_on_time"])
+def handle_return_action(call):
+    chat_id = call.message.chat.id
+
+    if call.data == "extend_rental":
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        kb.add("📅 Продлить посуточно", "🕒 Продлить почасово")
+        kb.add("🔙 Отмена")
+
+        bot.send_message(chat_id,
+                         "🔄 Выберите, как хотите продлить аренду:\n\n"
+                         "💡 <b>Посуточно</b> — дешевле, чем почасовая оплата.\n"
+                         "💡 <b>Почасово</b> — если нужна машина только на немного дольше.",
+                         parse_mode="HTML",
+                         reply_markup=kb)
+
+    elif call.data == "return_on_time":
+        bot.send_message(chat_id, "✅ Отлично! Ждём вас в назначенное время на станции.")
+
+@bot.message_handler(func=lambda m: m.text == "📅 Продлить посуточно")
+def extend_daily_select_days(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    set_state2(user_id, "extend_daily")  # сохраняем состояние
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT rh.id, rh.end_time, rh.car_id, c.price
+            FROM rental_history rh
+            JOIN cars c ON rh.car_id = c.car_id
+            WHERE rh.user_id = ? AND rh.status = 'confirmed'
+            ORDER BY rh.id DESC LIMIT 1
+        """, (user_id,))
+        rental = cursor.fetchone()
+        if not rental:
+            bot.send_message(chat_id, "❌ Активная аренда не найдена.")
+            return
+
+        car_id = rental["car_id"]
+        end_time_dt = datetime.strptime(rental["end_time"], "%Y-%m-%d %H:%M:%S")
+        end_time_date = end_time_dt.date()
+
+        # Проверка ближайшей брони
+        cursor.execute("""
+            SELECT rent_start
+            FROM rental_history
+            WHERE car_id = ? AND status = 'confirmed' AND rent_start > ?
+            ORDER BY rent_start ASC
+            LIMIT 1
+        """, (car_id, end_time_date.strftime("%Y-%m-%d")))
+        next_booking = cursor.fetchone()
+
+        if next_booking:
+            next_date = datetime.strptime(next_booking["rent_start"], "%Y-%m-%d").date()
+            free_days = (next_date - end_time_date).days
+        else:
+            free_days = 7  # максимум 7 дней
+
+        if free_days == 1:
+            bot.send_message(chat_id, "❌ Нет свободных дней для продления.")
+            return
+
+        # Клавиатура выбора дней
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        for i in range(1, min(7, free_days)):
+            label = f"{i} день" if i == 1 else f"{i} дня" if 1 < i < 5 else f"{i} дней"
+            kb.add(label)
+        kb.add("🔙 Отмена")
+
+        bot.send_message(chat_id, "📅 На сколько дней хотите продлить аренду?", reply_markup=kb)
+
+@bot.message_handler(func=lambda m: any(word in m.text for word in ["день", "дня", "дней"]))
+def confirm_daily_extension(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    if get_state2(user_id) != "extend_daily":
+        return
+
+    try:
+        days = int(message.text.split()[0])
+    except:
+        bot.send_message(chat_id, "❌ Неверный формат.")
+        return
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT rh.id, rh.end_time, rh.car_id, c.price
+            FROM rental_history rh
+            JOIN cars c ON rh.car_id = c.car_id
+            WHERE rh.user_id = ? AND rh.status = 'confirmed'
+            ORDER BY rh.id DESC LIMIT 1
+        """, (user_id,))
+        rental = cursor.fetchone()
+
+        if not rental:
+            bot.send_message(chat_id, "❌ Аренда не найдена.")
+            return
+
+        base_price = rental["price"]
+        total_price = calculate_price(base_price, days)
+
+        old_end_time = datetime.strptime(rental["end_time"], "%Y-%m-%d %H:%M:%S")
+        new_end_time = old_end_time + timedelta(days=days)
+        new_rent_end = new_end_time.date()
+
+        cursor.execute("""
+            UPDATE rental_history
+            SET end_time = ?, rent_end = ?
+            WHERE id = ?
+        """, (
+            new_end_time.strftime("%Y-%m-%d %H:%M:%S"),
+            new_rent_end.strftime("%Y-%m-%d"),
+            rental["id"]
+        ))
+        conn.commit()
+
+        kb = types.InlineKeyboardMarkup()
+        pay_button = types.InlineKeyboardButton(
+            text="💳 Оплатить",
+            callback_data=f"repay_daily_extend_{rental['id']}_{total_price}"
+        )
+        kb.add(pay_button)
+
+        bot.send_message(chat_id,
+                         f"✅ Аренда продлена на <b>{days} дн.</b>\n"
+                         f"📆 Новый срок: до <b>{new_end_time.strftime('%d.%m.%Y %H:%M')}</b>\n"
+                         f"💰 Стоимость: <b>{total_price} ₽</b>\n\n"
+                         f"Для завершения продления, пожалуйста, оплатите:",
+                         parse_mode="HTML",
+                         reply_markup=kb)
+
+    # Очистка состояния
+    session.pop(user_id, None)
+@bot.message_handler(func=lambda m: m.text == "🔙 Отмена")
+def cancel_action(message):
+    user_id = message.from_user.id
+    session.pop(user_id, None)
+    bot.send_message(message.chat.id, "❌ Действие отменено.", reply_markup=types.ReplyKeyboardRemove())
+@bot.message_handler(func=lambda m: m.text == "🕒 Продлить почасово")
+def extend_by_hour(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    # Получаем допустимые часы продления
+    allowed_hours, reason = get_allowed_extension_hours(user_id)
+    if not allowed_hours:
+        bot.send_message(chat_id, reason)
+        return
+
+    # Генерация клавиатуры только с разрешёнными часами
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    row = []
+    for h in allowed_hours:
+        row.append(f"{h} час" if h == 1 else f"{h} часа" if h in [2, 3, 4] else f"{h} часов")
+        if len(row) == 3:
+            kb.row(*row)
+            row = []
+    if row:
+        kb.row(*row)
+    kb.add("🔙 Отмена")
+
+    bot.send_message(chat_id, "⏱ На сколько часов продлить аренду?", reply_markup=kb)
+
+
+def get_allowed_extension_hours(user_id):
+    conn = sqlite3.connect("cars.db")
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    # 1️⃣ Конец текущей аренды
+    cur.execute("""
+        SELECT end_time
+        FROM rental_history
+        WHERE user_id = ? AND status = 'confirmed'
+        ORDER BY id DESC
+        LIMIT 1
+    """, (user_id,))
+    current = cur.fetchone()
+    if not current or not current["end_time"]:
+        conn.close()
+        return [], "❌ Не найдено время окончания текущей аренды."
+
+    end_time = datetime.strptime(current["end_time"], "%Y-%m-%d %H:%M:%S")
+
+    # 2️⃣ Начало следующей аренды
+    cur.execute("""
+        SELECT rent_start
+        FROM rental_history
+        WHERE user_id = ?
+          AND status IN ('pending', 'confirmed')
+          AND rent_start > ?
+        ORDER BY rent_start ASC
+        LIMIT 1
+    """, (user_id, end_time.strftime("%Y-%m-%d %H:%M:%S")))
+    next_rent = cur.fetchone()
+    conn.close()
+
+    if not next_rent or not next_rent["rent_start"]:
+        # Нет следующей аренды — все кнопки разрешены
+        return [1, 2, 3, 4, 6, 8, 10, 12], "✅ Продление без ограничений."
+
+    # 3️⃣ Приводим rent_start к 8:00
+    next_start_date = datetime.strptime(next_rent["rent_start"], "%Y-%m-%d")
+    next_start = next_start_date.replace(hour=8, minute=0, second=0)
+    # 4️⃣ Считаем, сколько часов доступно
+    max_hours = int((next_start - end_time).total_seconds() // 3600) - 24
+    if max_hours <= 0:
+        return [], "❌ Продление невозможно — следующая аренда слишком близко."
+
+    # 5️⃣ Фильтруем кнопки
+    possible_hours = [1, 2, 3, 4, 6, 8, 10, 12]
+    allowed = [h for h in possible_hours if h <= max_hours]
+
+    if not allowed:
+        return [], "❌ Нет доступных вариантов продления."
+    return allowed, f"✅ Можно продлить максимум на {max_hours} часов."
+
+from math import ceil
+
+# Вспомогательная функция округления до кратного 5
+def round_to_nearest_five(n):
+    return int(ceil(n / 5.0)) * 5
+
+@bot.message_handler(func=lambda m: m.text.lower().endswith(("час", "часа", "часов")))
+def confirm_hour_extension(message):
+    from datetime import datetime, timedelta
+
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    try:
+        hours = int(message.text.split()[0])
+        if not 1 <= hours <= 12:
+            raise ValueError
+    except:
+        bot.send_message(chat_id, "❌ Укажите число от 1 до 12.")
+        return
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Получаем текущую аренду с фактическим end_time
+        cursor.execute("""
+            SELECT rh.id AS rental_id, rh.start_time, rh.end_time, rent_start, rh.car_id, rh.status, 
+                   c.price AS daily_price
+            FROM rental_history rh
+            JOIN cars c ON rh.car_id = c.car_id
+            WHERE rh.user_id = ? AND rh.status = 'confirmed'
+            ORDER BY rh.id DESC LIMIT 1
+        """, (user_id,))
+        rental = cursor.fetchone()
+
+        if not rental:
+            bot.send_message(chat_id, "❌ Не удалось найти активную аренду.")
+            return
+
+        current_end = datetime.strptime(rental["end_time"], "%Y-%m-%d %H:%M:%S")
+
+        # Прибавляем часы
+        new_end = current_end + timedelta(hours=hours)
+
+        # Обновляем и end_time, и rent_end
+        cursor.execute("""
+            UPDATE rental_history
+            SET end_time = ?, rent_end = ?
+            WHERE id = ?
+        """, (
+            new_end.strftime("%Y-%m-%d %H:%M:%S"),  # полное время
+            new_end.strftime("%Y-%m-%d"),  # только дата
+            rental["rental_id"]
+        ))
+        conn.commit()
+
+        # 🔢 Почасовая стоимость
+        base_hour_price = rental["daily_price"] / 24
+        base_hour_price = round_to_nearest_five(base_hour_price)
+        final_hour_price = round_to_nearest_five(base_hour_price * 1.3)
+        total_price = final_hour_price * hours
+
+        # 💳 Кнопка оплаты
+        kb = types.InlineKeyboardMarkup()
+        pay_button = types.InlineKeyboardButton(
+            text="💳 Оплатить",
+            callback_data=f"repay_extend_{rental['rental_id']}_{hours}_{total_price}"
+        )
+        kb.add(pay_button)
+
+        bot.send_message(chat_id,
+                         f"✅ Аренда будет продлена на <b>{hours} ч.</b>\n"
+                         f"📆 Новый срок: <b>{new_end.strftime('%d.%m.%Y %H:%M')}</b>\n"
+                         f"💰 Стоимость: <b>{total_price} ₽</b>\n\n"
+                         f"Для продления аренды необходимо оплатить:",
+                         parse_mode="HTML",
+                         reply_markup=kb)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("repay_daily_extend_") or call.data.startswith("repay_extend_"))
+def handle_payment_callback(call):
+    data_parts = call.data.split("_")
+    rental_id = data_parts[2]
+    amount = data_parts[3]
+    payment_type = "Посуточное" if "daily" in call.data else "Почасовое"
+
+    bot.answer_callback_query(call.id)
+
+    # Здесь вставь свою ссылку на платёжную систему
+    # Для примера — подставляем rental_id и сумму
+    payment_url = f"https://yourpaymentlink.com/pay?rental_id={rental_id}&amount={amount}"
+
+    bot.send_message(call.message.chat.id,
+                     f"💳 {payment_type} продление\n"
+                     f"Сумма к оплате: <b>{amount} ₽</b>\n"
+                     f"🔗 Перейдите по ссылке для оплаты:\n"
+                     f"{payment_url}",
+                     parse_mode="HTML")
+def finalize_hourly_extension(rental_id: int, new_end_datetime: datetime, total_price: float, chat_id: int):
+    with sqlite3.connect("cars.db") as conn:
+        cursor = conn.cursor()
+        # Обновляем дату и время окончания аренды (сохраняем как строку с временем)
+        cursor.execute("UPDATE rental_history SET end_time = ? WHERE id = ?", (new_end_datetime.strftime("%Y-%m-%d %H:%M:%S"), rental_id))
+        conn.commit()
+
+    bot.send_message(chat_id,
+                     f"✅ Оплата прошла успешно!\n"
+                     f"⏰ Аренда продлена до <b>{new_end_datetime.strftime('%d.%m.%Y %H:%M')}</b>\n"
+                     f"💰 Сумма оплаты: <b>{total_price} ₽</b>",
+                     parse_mode="HTML")
 
 def notify_admin():
+    # Попытка получить блокировку без ожидания — если функция уже запущена, выйдем
+    if not notify_lock.acquire(blocking=False):
+        print("[notify_admin] Пропуск — функция уже работает.")
+        return
+
+    start_time = datetime.now()
+    try:
+        print(f"[notify_admin] Запуск в {start_time}")
+
+        check_upcoming_bookings()
+        cancel_expired_bookings()
+        check_rental_return_times()
+    except Exception as e:
+        print(f"[notify_admin] ❌ Ошибка верхнего уровня: {e}")
+    finally:
+        notify_lock.release()
+        print(f"[notify_admin] Завершено за {datetime.now() - start_time}")
+
+
+def check_rental_return_times():
+    now = datetime.now()
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT b.user_id, b.car_id, u.telegram_id,
+                   c.brand_model, c.year,
+                   rh.end_time
+            FROM bookings b
+            JOIN rental_history rh ON b.user_id = rh.user_id AND b.car_id = rh.car_id
+            JOIN users u ON b.user_id = u.telegram_id
+            JOIN cars c ON b.car_id = c.car_id
+            WHERE b.service = 'rental' AND b.status = 'process'
+        """)
+
+        rows = cursor.fetchall()
+
+        for row in rows:
+            user_id = row['user_id']
+            telegram_id = row['telegram_id']
+            brand_model = row['brand_model']
+            year = row['year']
+        try:
+                # Берем реальное окончание аренды прямо из rental_history
+            end_time = datetime.strptime(row['end_time'], "%Y-%m-%d %H:%M:%S")
+                # Если аренда уже должна была закончиться
+            if now > end_time:
+                overdue_hours = round((now - end_time).total_seconds() / 3600)
+
+                warning_text = (
+                    f"⚠️ Аренда автомобиля <b>{brand_model} ({year})</b> завершилась {overdue_hours} ч. назад.\n"
+                    f"Пожалуйста, сдайте авто или продлите аренду, чтобы избежать штрафа."
+                )
+                bot.send_message(telegram_id, warning_text, parse_mode="HTML")
+
+        except Exception as e:
+            print(f"[check_rental_return_times] Ошибка для user {user_id}: {e}")
+
+
+def check_upcoming_bookings():
     now = datetime.now()
     current_date = now.strftime('%Y-%m-%d')
-    print(f"[notify_admin] Поиск встреч: текущая дата и время: {now}")
 
-    matches = []
+    # Сопоставление service → человекочитаемые названия на русском
+    service_labels = {
+        'rent': 'Аренда',
+        'gazel': 'Газелист',
+        'malyar': 'Маляр',
+        'evacuator': 'Эвакуатор',
+        'shinomontazh': 'Шиномонтаж',
+        'diagnostic': 'Диагностика',
+        'other': 'Другое'
+    }
 
-    # 🔹 Получаем обычные записи из bookings (включая 'rental')
-    with db_lock:
-        with sqlite3.connect('cars.db', timeout=10) as conn:
+    try:
+        with sqlite3.connect("cars.db", timeout=10) as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT b.id, u.name, u.telegram_id, c.brand_model, b.date, b.time, b.service, b.car_id
+                SELECT b.id, u.name, u.telegram_id, c.brand_model, b.date, b.time, b.service
                 FROM bookings b
                 JOIN users u ON b.user_id = u.telegram_id
-                JOIN cars c ON b.car_id = c.car_id
+                LEFT JOIN cars c ON b.car_id = c.car_id
                 WHERE b.status = 'confirmed' AND b.date = ? AND b.notified = 0
             ''', (current_date,))
             bookings = cursor.fetchall()
 
-    print(f"[notify_admin] Получено записей: {len(bookings)}")
-
-    for booking in bookings:
-        booking_id, name, user_id, car_model, date_str, time_str, service, car_id = booking
-        booking_datetime_str = f"{date_str} {time_str}"
-
-        try:
-            booking_dt = datetime.strptime(booking_datetime_str, '%Y-%m-%d %H:%M:%S')
-        except ValueError:
+        for booking in bookings:
+            booking_id, name, user_id, car_model, date_str, time_str, service = booking
             try:
-                booking_dt = datetime.strptime(booking_datetime_str, '%Y-%m-%d %H:%M')
+                booking_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
             except ValueError:
                 continue
 
-        if now <= booking_dt <= now + timedelta(minutes=5):
-            match = {
-                "id": booking_id,
-                "name": name,
-                "user_id": user_id,
-                "car_model": car_model,
-                "date": date_str,
-                "time": time_str,
-                "service": service,
-                "source": "bookings"
-            }
+            if now <= booking_time <= now + timedelta(minutes=5):
+                car_model_display = car_model if car_model else "—"
+                service_display = service_labels.get(service, service)  # Если нет в списке, покажем как есть
 
-            # Если это аренда — пробуем найти rent_end
-            if service == "rental":
-                with db_lock:
-                    with sqlite3.connect('cars.db', timeout=10) as conn:
-                        cursor = conn.cursor()
-                        cursor.execute('''
-                            SELECT rent_end
-                            FROM rental_history
-                            WHERE user_id = ?
-                              AND car_id = ?
-                              AND DATE(rent_start) = ?
-                            ORDER BY rent_start DESC
-                            LIMIT 1
-                        ''', (user_id, car_id, date_str))
-                        rental_row = cursor.fetchone()
-
-                if rental_row:
-                    match["end_date"] = rental_row[0]
-                else:
-                    print(f"[notify_admin] ⚠️ Не найден end_date для проката из bookings: {match}")
-            matches.append(match)
-
-    # 🔹 Получаем аренду из rental_history напрямую
-    with db_lock:
-        with sqlite3.connect('cars.db', timeout=10) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT rh.id, u.name, u.telegram_id, c.brand_model, rh.rent_start, rh.rent_end
-                FROM rental_history rh
-                JOIN users u ON rh.user_id = u.telegram_id
-                JOIN cars c ON rh.car_id = c.car_id
-            ''')
-            rental_bookings = cursor.fetchall()
-
-    for rental in rental_bookings:
-        rental_id, name, user_id, car_model, rent_start_str, rent_end_str = rental
-        try:
-            rent_start = datetime.strptime(rent_start_str, '%Y-%m-%d %H:%M')
-        except ValueError:
-            continue
-
-        if now <= rent_start <= now + timedelta(minutes=5):
-            matches.append({
-                "id": rental_id,
-                "name": name,
-                "user_id": user_id,
-                "car_model": car_model,
-                "date": rent_start_str.split()[0],
-                "time": rent_start.strftime('%H:%M'),
-                "end_date": rent_end_str,
-                "service": "rental",
-                "source": "rental_history"
-            })
-    with db_lock:
-        with sqlite3.connect('cars.db', timeout=10) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT rh.id, u.name, u.telegram_id, c.brand_model, rh.rent_end
-                FROM rental_history rh
-                JOIN users u ON rh.user_id = u.telegram_id
-                JOIN cars c ON rh.car_id = c.car_id
-            ''')
-            rentals = cursor.fetchall()
-
-    now = datetime.now().replace(second=0, microsecond=0)
-
-    for rental_id, name, telegram_id, car_model, rent_end_str in rentals:
-        try:
-            rent_end = datetime.strptime(rent_end_str, "%Y-%m-%d %H:%M").replace(second=0, microsecond=0)
-        except ValueError:
-            continue
-
-        # Если прямо сейчас момент возврата
-        if now == rent_end:
-            message = (
-                f"⏰ Сейчас клиент <b>{html.escape(name)}</b> должен сдать авто <b>{html.escape(car_model)}</b>."
-            )
-            markup = InlineKeyboardMarkup()
-            markup.add(
-                InlineKeyboardButton("🚘 Машина получена", callback_data=f"car_returned_{rental_id}")
-            )
-            bot.send_message(ADMIN_ID2, message, parse_mode="HTML", reply_markup=markup)
-    print(f"[notify_admin] Найдено записей в интервале: {len(matches)}")
-
-    # 🔹 Отправка уведомлений
-    for match in matches:
-        try:
-            booking_id = match["id"]
-            name = match["name"]
-            user_id = match["user_id"]
-            car_model = match["car_model"]
-            service = match["service"]
-            date_str = match["date"]
-            time_str = match["time"]
-
-            if service == "rental" and match.get("source") == "bookings":
-                end_date_str = match.get("end_date")
-
-                # Если end_date отсутствует — попробуем найти в rental_history
-                if not end_date_str:
-                    with db_lock:
-                        with sqlite3.connect('cars.db', timeout=10) as conn:
-                            cursor = conn.cursor()
-                            cursor.execute('''
-                                SELECT rent_end FROM rental_history
-                                WHERE user_id = ? AND car_id = (
-                                    SELECT car_id FROM cars WHERE brand_model = ?
-                                ) AND DATE(rent_start) = ?
-                                ORDER BY id DESC LIMIT 1
-                            ''', (user_id, car_model, date_str))
-                            result = cursor.fetchone()
-                            if result:
-                                end_date_str = result[0]
-                            else:
-                                print(f"[notify_admin] ⚠️ Не удалось найти end_date в rental_history: {match}")
-                                continue  # Пропускаем, если всё ещё нет даты
-
-                message = (
-                    f"📣 <b>Начало аренды!</b>\n\n"
-                    f"🔹 <b>#{booking_id}</b>\n"
-                    f"👤 Клиент: {html.escape(name)}\n"
-                    f"🚗 Машина: {html.escape(car_model)}\n"
-                    f"📅 Срок: <b>{date_str} ➝ {end_date_str}</b>\n"
-                    f"🕒 Время начала: <b>{time_str}</b>\n"
-                )
-            else:
                 message = (
                     f"📣 <b>Время встречи!</b>\n\n"
                     f"🔹 <b>#{booking_id}</b>\n"
                     f"👤 Клиент: {html.escape(name)}\n"
-                    f"🚗 Машина: {html.escape(car_model)}\n"
-                    f"🛠 Услуга: <b>{service}</b>\n"
+                    f"🚗 Машина: {html.escape(car_model_display)}\n"
+                    f"🛠 Услуга: <b>{html.escape(service_display)}</b>\n"
                     f"📅 Дата: <b>{date_str}</b>\n"
-                    f"🕒 Время: <b>{time_str}</b>\n"
+                    f"🕒 Время: <b>{time_str}</b>"
                 )
 
-            markup = InlineKeyboardMarkup()
-            markup.add(
-                InlineKeyboardButton("✅ Сделка состоялась", callback_data=f"deal_success_{booking_id}_{user_id}"),
-                InlineKeyboardButton("❌ Не состоялась", callback_data=f"deal_fail_{booking_id}_{user_id}")
-            )
-
-            bot.send_message(ADMIN_ID2, message, parse_mode="HTML", reply_markup=markup)
-            print(f"[notify_admin] Уведомление отправлено: {booking_id}")
-
-            # Обновляем статус уведомления только для bookings
-            if match.get("source") == "bookings":
-                with db_lock:
-                    with sqlite3.connect('cars.db', timeout=10) as conn:
-                        conn.execute('UPDATE bookings SET notified = 1 WHERE id = ?', (booking_id,))
+                markup = InlineKeyboardMarkup()
+                markup.add(
+                    InlineKeyboardButton("✅ Сделка состоялась", callback_data=f"deal_success_{booking_id}_{user_id}"),
+                    InlineKeyboardButton("❌ Не состоялась", callback_data=f"deal_fail_{booking_id}_{user_id}")
+                )
+                try:
+                    bot.send_message(ADMIN_ID2, message, parse_mode="HTML", reply_markup=markup)
+                    with sqlite3.connect("cars.db", timeout=10) as conn:
+                        conn.execute("UPDATE bookings SET notified = 1 WHERE id = ?", (booking_id,))
                         conn.commit()
+                except Exception as e:
+                    print(f"[check_upcoming_bookings] Ошибка отправки сообщения: {e}")
 
-        except Exception as e:
-            print(f"[notify_admin] ❌ Ошибка при обработке записи: {e}")
+    except Exception as e:
+        print(f"[check_upcoming_bookings] ❌ Ошибка при проверке бронирований: {e}")
+def send_meeting_notification(booking_id, name, user_id, car_model, date_str, time_str, service):
+    try:
+        now = datetime.now()
+        booking_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        if not (now <= booking_time <= now + timedelta(minutes=60)):
+            return
 
+        message = (
+            f"📣 <b>Время встречи!</b>\n\n"
+            f"🔹 <b>#{booking_id}</b>\n"
+            f"👤 Клиент: {html.escape(name)}\n"
+            f"🚗 Машина: {html.escape(car_model)}\n"
+            f"🛠 Услуга: <b>{service}</b>\n"
+            f"📅 Дата: <b>{date_str}</b>\n"
+            f"🕒 Время: <b>{time_str}</b>"
+        )
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton("✅ Сделка состоялась", callback_data=f"deal_success_{booking_id}_{user_id}"),
+            InlineKeyboardButton("❌ Не состоялась", callback_data=f"deal_fail_{booking_id}_{user_id}")
+        )
+
+        bot.send_message(ADMIN_ID2, message, parse_mode="HTML", reply_markup=markup)
+
+        with sqlite3.connect("cars.db", timeout=10) as conn:
+            conn.execute("UPDATE bookings SET notified = 1 WHERE id = ?", (booking_id,))
+            conn.commit()
+
+    except Exception as e:
+        print(f"[send_meeting_notification] Ошибка: {e}")
+
+
+
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
+
+def cancel_expired_bookings():
+    with db_lock:
+        conn = sqlite3.connect("cars.db")
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT b.*
+            FROM bookings b
+            JOIN users u ON b.user_id = u.telegram_id
+            WHERE u.status = 'waiting_car'
+        """)
+        bookings = cur.fetchall()
+
+        now = datetime.now()
+        print(f"[cancel_expired_bookings] Найдено неподтверждённых броней: {len(bookings)}")
+
+        for booking in bookings:
+            booking_id = booking["id"]
+            status = booking["status"]
+            user_id = booking["user_id"]
+            date_raw = booking["date"]
+            time_raw = booking["time"]
+            deposit_status = booking["deposit_status"] if "deposit_status" in booking.keys() else "unpaid"
+            if not date_raw or not time_raw:
+                print(f"[cancel_expired_bookings] Пропущена заявка #{booking_id} — отсутствует date или time")
+                continue
+
+            booking_datetime_str = f"{date_raw} {time_raw}"
+            try:
+                try:
+                    booking_datetime = datetime.strptime(booking_datetime_str, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    booking_datetime = datetime.strptime(booking_datetime_str, "%Y-%m-%d %H:%M")
+            except ValueError:
+                print(f"[cancel_expired_bookings] ❌ Неверный формат даты/времени в заявке #{booking_id}: {booking_datetime_str}")
+                continue
+
+            elapsed = now - booking_datetime
+
+            # 🕒 Логика по статусу депозита
+            if deposit_status == "paid":
+                print(deposit_status)
+                expired_limit = timedelta(days=1)
+            else:
+                expired_limit = timedelta(minutes=60)
+
+            if elapsed > expired_limit:
+                print(f"[cancel_expired_bookings] ⏳ Заявка #{booking_id} просрочена (прошло {elapsed})")
+                cancel_booking(cur, booking_id, user_id)
+            else:
+                print(f"[cancel_expired_bookings] ✅ Заявка #{booking_id} ещё в пределах времени (прошло {elapsed})")
+
+        conn.commit()
+        conn.close()
+        print(f"[cancel_expired_bookings] Завершено за {datetime.now() - now}")
+
+def cancel_booking(cur, booking_id, user_id):
+    # Получаем car_id перед удалением заявки
+    cur.execute("SELECT car_id FROM bookings WHERE id = ?", (booking_id,))
+    result = cur.fetchone()
+    car_id = result["car_id"] if result else None
+
+    if car_id is not None:
+        # Освобождаем машину (is_available = 1)
+        cur.execute("UPDATE cars SET is_available = 1 WHERE car_id = ?", (car_id,))
+        print(f"[cancel_expired_bookings] 🚗 Авто #{car_id} освобождено (is_available = 1)")
+    else:
+        print(f"[cancel_expired_bookings] ⚠ Не удалось получить car_id для заявки #{booking_id}")
+
+    # Удаляем бронь
+    cur.execute("DELETE FROM bookings WHERE id = ?", (booking_id,))
+
+    # Удаляем связанную запись из rental_history со статусом 'confirmed'
+    if car_id is not None:
+        cur.execute("""
+            DELETE FROM rental_history
+            WHERE user_id = ? AND car_id = ? AND status = 'confirmed'
+        """, (user_id, car_id))
+        print(f"[cancel_expired_bookings] 📄 rental_history удалена для user_id={user_id}, car_id={car_id}, status='confirmed'")
+
+    # Обновляем статус пользователя
+    cur.execute("UPDATE users SET status = 'new' WHERE telegram_id = ?", (user_id,))
+    print(f"[cancel_expired_bookings] 🗑 Заявка #{booking_id} удалена, пользователь #{user_id} → 'new'")
+def check_broken_cars_and_notify():
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        print("[check_broken_cars_and_notify] Запуск")
+
+        # 1. Ищем сломанные машины с датой ремонта
+        cursor.execute("SELECT * FROM cars WHERE is_broken = 1 AND fix_date IS NOT NULL")
+        broken_cars = cursor.fetchall()
+        print(f"Найдено сломанных машин: {len(broken_cars)}")
+
+        for broken_car in broken_cars:
+            car_id = broken_car["car_id"]
+            if not car_id:
+                print("⚠️ Пропущена машина без car_id")
+                continue
+
+            # Проверяем дату ремонта
+            fix_date_str = broken_car["fix_date"]
+
+            if not fix_date_str:
+                print(f"⚠️ Машина {car_id} пропущена — нет даты ремонта")
+                continue
+
+            try:
+
+                fix_date = datetime.strptime(fix_date_str, "%Y-%m-%d").date()
+
+            except ValueError:
+                print(f"⚠ Неверный формат fix_date у машины {car_id}: {fix_date_str}")
+                continue
+            # Проверяем brand и model
+            brand_model = broken_car["brand_model"]
+            year = broken_car["year"]
+
+            if not brand_model or not year:
+                print(f"⚠️ Машина {car_id} пропущена — нет brand/model/year")
+                continue
+            # --- 2. Ищем брони ---
+            cursor.execute("""
+                SELECT * FROM bookings 
+                WHERE car_id = ? AND status = 'confirmed' AND date <= ?
+            """, (car_id, fix_date.strftime("%Y-%m-%d")))
+            bookings = cursor.fetchall()
+
+            # --- 3. Ищем арендные истории ---
+            cursor.execute("""
+                SELECT * FROM rental_history
+                WHERE car_id = ? AND rent_start <= ?
+            """, (car_id, fix_date.strftime("%Y-%m-%d")))
+            rentals = cursor.fetchall()
+
+            # Объединяем брони и аренды
+            broken_service = broken_car["service"]  # предполагается, что у машины есть поле service
+
+            # --- Объединяем брони и аренды ---
+            all_orders = []
+
+            # добавляем брони, если сервис сломанной машины rent
+            if broken_service == "rent":
+                for b in bookings:
+                    cursor.execute("SELECT brand_model, year FROM cars WHERE car_id = ?", (b["car_id"],))
+
+                    car = cursor.fetchone()
+                    all_orders.append({
+                        "user_id": b["user_id"],
+                        "date": b["date"],
+                        "booking_id": b["id"],
+                        "is_booking": True,
+                        "brand_model": car["brand_model"],
+                        "year": car["year"],
+                        "service": "rent"
+                    })
+
+            # добавляем аренды, если сервис сломанной машины rental
+            elif broken_service == "rental":
+                for r in rentals:
+
+                    cursor.execute("SELECT brand_model, year FROM cars WHERE car_id = ?", (r["car_id"],))
+                    car = cursor.fetchone()
+
+                    # Пытаемся найти связанную бронь
+                    cursor.execute("""
+                        SELECT id FROM bookings 
+                        WHERE car_id = ? AND user_id = ? AND status = 'confirmed'
+                        LIMIT 1
+                    """, (r["car_id"], r["user_id"]))
+                    booking_row = cursor.fetchone()
+                    booking_id = booking_row["id"] if booking_row else None
+
+                    all_orders.append({
+                        "user_id": r["user_id"],
+                        "date": r["rent_start"],  # можно сразу datetime.strptime здесь
+                        "booking_id": booking_id,
+                        "is_booking": True,
+                        "brand_model": car["brand_model"],
+                        "year": car["year"],
+                        "service": "rental"
+                    })
+
+            # --- Фильтруем дубликаты ---
+            seen = set()
+            unique_orders = []
+            for order in all_orders:
+                order_date = order["date"]
+                if isinstance(order_date, str):
+                    order_date = datetime.strptime(order_date, "%Y-%m-%d")
+
+                cursor.execute("""
+                    SELECT * FROM cars 
+                    WHERE is_broken = 0 AND car_id != ? AND service = ?
+                """, (r["car_id"], order["service"]))
+                other_cars = cursor.fetchall()
+
+                alternatives = []
+
+                for alt in other_cars:
+
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM bookings 
+                        WHERE car_id = ? AND date = ? AND status = 'confirmed'
+                    """, (alt["car_id"], order_date.strftime("%Y-%m-%d")))
+                    busy = cursor.fetchone()[0]
+
+                    if busy == 0:
+                        alternatives.append(alt)
+
+                if alternatives:
+                    notification_key = (order["user_id"], order_date)
+                    if notification_key in sent_notifications:
+                        continue
+
+                    kb = types.InlineKeyboardMarkup()
+                    for alt in alternatives[:5]:
+                        btn_text = f"{alt['brand_model']} ({alt['year']}) – {alt['station']}"
+
+                        # 🔍 проверяем, есть ли аренда
+                        cursor.execute("""
+                            SELECT 1 FROM rental_history
+                            WHERE user_id = ? AND car_id = ? AND rent_start = ?
+                            LIMIT 1
+                        """, (order["user_id"], r["car_id"], order_date.strftime("%Y-%m-%d")))
+                        rental_exists = cursor.fetchone()
+
+                        if rental_exists:
+                            # 👉 формат: choosing_alt_rental_<booking_id>_<user_id>_<car_id>_<date>
+                            cb_data = f"choosing_alt_rental_{order['booking_id']}_{order['user_id']}_{alt['car_id']}_{order_date.strftime('%Y-%m-%d')}"
+                        else:
+                            # 👉 формат: choosing_alt_booking_<booking_id>_<car_id>_<date>
+                            cb_data = f"choosing_alt_booking_{order['booking_id']}_{alt['car_id']}_{order_date.strftime('%Y-%m-%d')}"
+                        kb.add(types.InlineKeyboardButton(text=btn_text, callback_data=cb_data))
+
+                    # --- кнопка возврата залога (только если бронь и залог оплачен) ---
+                    cursor.execute("SELECT deposit_status, user_id, broken_notified FROM bookings WHERE id = ?", (order["booking_id"],))
+                    booking = cursor.fetchone()
+                    if booking and booking["deposit_status"] == "paid":
+                        kb.add(types.InlineKeyboardButton(
+                            text="💸 Вернуть залог",
+                            callback_data=f"returning_deposit_booking_{order['booking_id']}_{order['user_id']}"
+                        ))
+                    if booking["broken_notified"]:
+                        continue
+                    bot.send_message(
+                        order["user_id"],
+                        f"⚠️ Извините, но ваша машина {order['brand_model']} ({order['year']}) "
+                        f"сломалась и не будет доступна {order_date.strftime('%d.%m.%Y')}.\n\n"
+                        "Предлагаем выбрать один из доступных вариантов:",
+                        reply_markup=kb,
+                        parse_mode="HTML"
+                    )
+                    cursor.execute("UPDATE bookings SET broken_notified = 1 WHERE id = ?", (booking["id"],))
+                    conn.commit()
+                    sent_notifications.add(notification_key)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("choosing_alt_booking_"))
+def handle_choose_alt_booking(call):
+    try:
+        _, _, _, booking_id, car_id, date_str = call.data.split("_")
+        booking_id = int(booking_id)
+        car_id = int(car_id)
+
+        with sqlite3.connect("cars.db") as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # Проверяем доступность машины
+            cursor.execute("""
+                SELECT COUNT(*) FROM bookings 
+                WHERE car_id = ? AND date = ? AND status = 'confirmed'
+            """, (car_id, date_str))
+            if cursor.fetchone()[0] > 0:
+                bot.answer_callback_query(call.id, "❌ Эта машина уже занята!")
+                return
+
+            # Обновляем бронь
+            cursor.execute("""
+                UPDATE bookings 
+                SET car_id = ? 
+                WHERE id = ?
+            """, (car_id, booking_id))
+            conn.commit()
+
+        bot.answer_callback_query(call.id, "✅ Вы выбрали альтернативную машину!")
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        bot.send_message(call.message.chat.id, f"✅ Бронь #{booking_id} обновлена на машину ID {car_id}")
+
+    except Exception as e:
+        bot.answer_callback_query(call.id, "❌ Ошибка при выборе машины!")
+        bot.send_message(call.message.chat.id, f"Ошибка: {e}")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("choosing_alt_rental_"))
+def handle_choose_alt_rental(call):
+    try:
+        _, _, _, booking_id, user_id, car_id, date_str = call.data.split("_")
+        booking_id = int(booking_id) if booking_id.isdigit() else 0
+        user_id = int(user_id)
+        car_id = int(car_id)
+
+        with sqlite3.connect("cars.db") as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # Проверяем доступность
+            cursor.execute("""
+                SELECT COUNT(*) FROM bookings 
+                WHERE car_id = ? AND date = ? AND status = 'confirmed'
+            """, (car_id, date_str))
+            if cursor.fetchone()[0] > 0:
+                bot.answer_callback_query(call.id, "❌ Эта машина уже занята!")
+                return
+
+            # Обновляем rental_history
+            cursor.execute("""
+                UPDATE rental_history 
+                SET car_id = ? 
+                WHERE user_id = ? AND rent_start = ?
+            """, (car_id, user_id, date_str))
+
+            # Если аренда привязана к брони → обновляем и её
+            if booking_id > 0:
+                cursor.execute("""
+                    UPDATE bookings
+                    SET car_id = ? 
+                    WHERE id = ? AND user_id = ?
+                """, (car_id, booking_id, user_id))
+
+            conn.commit()
+
+        bot.answer_callback_query(call.id, "✅ Вы выбрали альтернативную машину!")
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        bot.send_message(call.message.chat.id, f"✅ Аренда на {date_str} обновлена на машину ID {car_id}")
+
+    except Exception as e:
+        bot.answer_callback_query(call.id, "❌ Ошибка при выборе машины!")
+        bot.send_message(call.message.chat.id, f"Ошибка: {e}")
 @bot.callback_query_handler(func=lambda call: call.data.startswith("car_returned_"))
 def handle_car_returned(call):
     rental_id = call.data.split("_")[2]
@@ -5160,10 +10154,10 @@ def handle_feedback(call):
 
         # Отвечаем
         start_use_kb = types.InlineKeyboardMarkup()
-        start_use_kb.add(types.InlineKeyboardButton("🚀 Начать использование машины", callback_data="start_use"))
+        start_use_kb.add(types.InlineKeyboardButton("🚀 На главную", callback_data="start_use"))
 
         bot.send_message(user_id, feedback_text)
-        bot.send_message(user_id, "Нажмите кнопку ниже, чтобы начать использование автомобиля:",
+        bot.send_message(user_id, "Нажмите кнопку ниже, чтобы перейти в главное меню:",
                          reply_markup=start_use_kb)
 
     except Exception as e:
@@ -5176,22 +10170,44 @@ def handle_feedback(call):
 def start_use_handler(callback_query):
     user_id = callback_query.from_user.id
 
-    # Удалим последние 100 сообщений (без async — мы используем TeleBot)
-    for i in range(100):
-        try:
-            bot.delete_message(chat_id=user_id, message_id=callback_query.message.message_id - i)
-        except:
-            continue  # Игнорируем ошибки
-
-    # Обновим статус
     conn = sqlite3.connect('cars.db')
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET status = ? WHERE telegram_id = ?", ('using_car', user_id))
-    conn.commit()
+
+    # Получаем бронь
+    cursor.execute("""
+        SELECT id, service
+        FROM bookings
+        WHERE user_id = ? AND status = 'confirmed'
+        ORDER BY id DESC
+        LIMIT 1
+    """, (user_id,))
+    booking = cursor.fetchone()
+
+    if not booking:
+        bot.send_message(user_id, "❌ Нет активных подтвержденных бронирований.")
+        conn.close()
+        return
+
+    booking_id = booking["id"]
+    service = booking["service"]
+
+    # Логика завершения для определённых сервисов
+    if service in ("painter", "gazel", "return"):
+        cursor.execute("UPDATE users SET status = 'new' WHERE telegram_id = ?", (user_id,))
+        cursor.execute("UPDATE bookings SET status = 'completed' WHERE id = ?", (booking_id,))
+        conn.commit()
+        bot.send_message(user_id, f"Бронь завершена.\n Нажми на /go")
+    else:
+        cursor.execute("UPDATE users SET status = 'using_car' WHERE telegram_id = ?", (user_id,))
+        conn.commit()
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        markup.add("/start")  # кнопка, которая отправляет команду /start
+        bot.send_message(user_id,
+                         " Отлично!\n\nНажмите на кнопку снизу, чтобы вернуться в меню.",
+                         reply_markup=markup)
+
     conn.close()
-
-    bot.send_message(user_id, "✅ Машина передана! Введите /start для получения доступа к функциям.")
-
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_cars")
 def handle_back_to_cars(call):
 
@@ -5222,40 +10238,7 @@ def send_available_cars(chat_id):
         markup.add(types.InlineKeyboardButton("🚗 Выбрать", callback_data=f"choose_{car_id}"))
         bot.send_message(chat_id, f"{brand_model} ({year})", reply_markup=markup)
 
-@bot.message_handler(commands=['raw_rental_history'])
-def show_raw_rental_history(message):
-    import sqlite3
 
-    try:
-        conn = sqlite3.connect('cars.db')
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT * FROM rental_history ORDER BY id DESC")
-        rows = cursor.fetchall()
-
-        if not rows:
-            bot.send_message(message.chat.id, "📋 Таблица rental_history пуста.")
-            return
-
-        for row in rows:
-            text = (
-                f"🧾 Аренда #{row['id']}\n"
-                f"👤 user_id: {row['user_id']}\n"
-                f"🚘 car_id: {row['car_id']}\n"
-                f"📅 rent_start: {row['rent_start']}\n"
-                f"📅 rent_end: {row['rent_end']}\n"
-                f"💰 price: {row['price']}\n"
-                f"🚚 delivery_price: {row['delivery_price']}\n"
-                f"📍 delivery_address: {row['delivery_address']}"
-            )
-
-            bot.send_message(message.chat.id, text)
-
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
-    finally:
-        conn.close()
 @bot.message_handler(commands=['rental_history'])
 def show_rental_history(message):
     import sqlite3
@@ -5336,100 +10319,66 @@ def feedback_stats(message):
 
 @bot.message_handler(commands=['users'])
 def handle_users_command(message):
-    conn = sqlite3.connect("cars.db")  # Замените на имя вашей базы данных
+    conn = sqlite3.connect("cars.db")
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
     cursor.execute("SELECT id, phone, name, telegram_id, status FROM users")
     users = cursor.fetchall()
+    conn.close()
 
     if not users:
         bot.send_message(message.chat.id, "❗️Пользователи не найдены.")
-        conn.close()
         return
 
-    text = "📋 Список пользователей:\n\n"
+    # Группируем пользователей по статусу
+    grouped_users = {
+        'new': [],
+        'waiting_car': [],
+        'awaiting_use': [],
+        'using_car': [],
+        'blocked': [],
+        'other': []
+    }
 
     for user in users:
-        user_id, phone, name, telegram_id, status = user
-        user_info = (
-            f"🆔 ID: {user_id}\n"
-            f"📱 Телефон: {phone}\n"
-            f"👤 Имя: {name}\n"
-            f"💬 Telegram ID: {telegram_id}\n"
-            f"📌 Статус: {status}\n"
-        )
+        status = user['status']
+        if status in grouped_users:
+            grouped_users[status].append(user)
+        else:
+            grouped_users['other'].append(user)
 
-        if status == 'using_car':
-            # Получаем подтвержденное бронирование
-            cursor.execute('''
-                SELECT car_id, service, date, time, status
-                FROM bookings
-                WHERE user_id = ? AND status = 'confirmed'
-                ORDER BY created_at DESC
-                LIMIT 1
-            ''', (user_id,))
-            booking = cursor.fetchone()
+    # Маппинг для красивых заголовков
+    status_titles = {
+        'new': "🟡 Новые пользователи",
+        'waiting_car': "🕓 Ожидают машину",
+        'awaiting_use': "🔄 Получили авто, не начали аренду",
+        'using_car': "🟢 В процессе аренды",
+        'blocked': "🛑 Заблокированные",
+        'other': "❓ Прочие статусы"
+    }
 
-            if booking:
-                car_id, service, date, time, booking_status = booking
+    # Отправка блоками
+    for status, title in status_titles.items():
+        user_list = grouped_users[status]
+        if not user_list:
+            continue
 
-                # Получаем данные об авто
-                cursor.execute('''
-                    SELECT brand_model, year
-                    FROM cars
-                    WHERE car_id = ?
-                ''', (car_id,))
-                car = cursor.fetchone()
+        text = f"<b>{title}:</b>\n\n"
 
-                if car:
-                    model, year = car
-                    user_info += f"🚗 Машина: {model} ({year})\n"
-                else:
-                    user_info += f"🚗 Машина: ID {car_id} (информация не найдена)\n"
+        for user in user_list:
+            user_info = (
+                f"🆔 ID: {user['id']}\n"
+                f"📱 Телефон: {user['phone'] or '—'}\n"
+                f"👤 Имя: {user['name'] or '—'}\n"
+                f"💬 Telegram ID: {user['telegram_id']}\n"
+                f"📌 Статус: {user['status']}\n\n"
+            )
+            text += user_info
 
-                user_info += (
-                    f"🔧 Сервис: {service}\n"
-                    f"📅 Дата: {date}\n"
-                    f"⏰ Время: {time}\n"
-                    f"✅ Статус брони: {booking_status}\n"
-                )
-
-                # Если аренда через 'rental', получаем данные из rental_history
-                if service == 'rental':
-                    cursor.execute('''
-                        SELECT rent_start, rent_end, price, delivery_price, delivery_address
-                        FROM rental_history
-                        WHERE user_id = ? AND car_id = ?
-                        ORDER BY id DESC
-                        LIMIT 1
-                    ''', (user_id, car_id))
-                    rental = cursor.fetchone()
-
-                    if rental:
-                        rent_start, rent_end, price, delivery_price, delivery_address = rental
-                        user_info += (
-                            f"📆 Аренда с: {rent_start} по {rent_end}\n"
-                            f"💰 Стоимость: {price} ₽\n"
-                        )
-                        if delivery_price:
-                            user_info += f"🚚 Доставка: {delivery_price} ₽\n"
-                        if delivery_address:
-                            user_info += f"📍 Адрес доставки: {delivery_address}\n"
-                    else:
-                        user_info += "⚠️ Инфо об аренде не найдена\n"
-
-            else:
-                user_info += "⚠️ Бронирование не найдено\n"
-
-        text += user_info + "\n"
-
-    conn.close()
-
-    # Отправляем текст частями, если он большой
-    for i in range(0, len(text), 4000):
-        bot.send_message(message.chat.id, text[i:i+4000])
-
-
+        # Разбиваем, если слишком длинно
+        for i in range(0, len(text), 4000):
+            bot.send_message(message.chat.id, text[i:i+4000], parse_mode='HTML')
 
 
 
@@ -5453,39 +10402,289 @@ import sqlite3
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 
-@bot.message_handler(commands=['set_status'])
-def set_status_command(message):
-    user_id = message.from_user.id
-    args = message.text.split()
 
-    if len(args) != 2:
-        return bot.send_message(message.chat.id, "Использование: /set_status <status>")
-
-    new_status = args[1]
-
-    conn = sqlite3.connect('cars.db')
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET status = ? WHERE telegram_id = ?", (new_status, user_id))
-    conn.commit()
-    conn.close()
-
-    bot.send_message(message.chat.id, f"✅ Ваш статус обновлён на: {new_status}")
 
 
 def show_main_menu(chat_id, edit_message_id=None):
-    kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(
-        types.InlineKeyboardButton("Профиль", callback_data="menu_profile"),
-        types.InlineKeyboardButton("Помощь", callback_data="menu_help"),
-        types.InlineKeyboardButton("Заправки", callback_data="menu_fuel"),
-        types.InlineKeyboardButton("Смотреть авто", callback_data="menu_cars"),
-        types.InlineKeyboardButton("Заказать такси", callback_data="taxi")
+    # Получаем user_id по chat_id (telegram_id)
+    cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (chat_id,))
+    user = cursor.fetchone()
+    if not user:
+        # Пользователь не найден — можно просто показать меню без условий
+        user_id = None
+    else:
+        user_id = chat_id
+
+    # Получаем активное бронирование со статусом 'process' (или 'pending'? уточни)
+    booking = None
+    if user_id:
+        cursor.execute("""
+            SELECT service FROM bookings 
+            WHERE user_id = ? AND status = 'process' 
+            ORDER BY created_at DESC LIMIT 1
+        """, (user_id,))
+        booking = cursor.fetchone()
+
+    # Формируем клавиатуру
+    inline_kb = types.InlineKeyboardMarkup(row_width=2)
+    inline_kb.add(
+        types.InlineKeyboardButton("👤Профиль", callback_data="menu_profile"),
+        types.InlineKeyboardButton("💬 Помощь", callback_data="menu_help"),
+        types.InlineKeyboardButton("⛽️ Заправки", callback_data="menu_fuel"),
+        types.InlineKeyboardButton("🚗 Смотреть авто", callback_data="menu_cars"),
+        types.InlineKeyboardButton("🚕 Заказать такси", callback_data="taxi")
     )
 
-    if edit_message_id:
-        bot.edit_message_text("Выберите что вам хочется", chat_id, edit_message_id, reply_markup=kb)
+    # В зависимости от наличия брони и типа сервиса добавляем кнопки
+    if booking:
+        service = booking[0]
+        print(service)
+        if service == 'rental':
+            inline_kb.add(
+                types.InlineKeyboardButton("✅ Продлить аренду", callback_data="extend_rental"),
+                types.InlineKeyboardButton("❌ Завершить аренду", callback_data="returnrent_car")
+            )
+        elif service == 'rent':
+            # Только завершить аренду, продлить убрать
+            inline_kb.add(
+                types.InlineKeyboardButton("❌ Завершить аренду", callback_data="returnrent_car")
+            )
     else:
-        bot.send_message(chat_id, "Выберите что вам хочется", reply_markup=kb)
+        # Если нет активной аренды — обе кнопки не показываем
+        pass
+
+    # Отправляем или редактируем сообщение
+    if edit_message_id:
+        bot.edit_message_text("Выберите, что вам хочется", chat_id, edit_message_id, reply_markup=inline_kb)
+    else:
+        bot.send_message(chat_id, "Выберите, что вам хочется", reply_markup=inline_kb)
+import math
+@bot.callback_query_handler(func=lambda call: call.data == "returnrent_car")
+def handle_return_car(call):
+    user_id = call.from_user.id
+
+    with db_lock:
+        with get_db_connection() as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT b.id AS booking_id, b.car_id, b.service, b.status, b.time,
+                       u.name, u.phone,
+                       c.brand_model, c.year, c.station, c.number, c.price
+                FROM bookings b
+                JOIN users u ON b.user_id = u.telegram_id
+                JOIN cars c ON b.car_id = c.car_id
+                WHERE b.user_id = ? AND b.status = 'process'
+                ORDER BY b.id DESC
+                LIMIT 1
+            """, (user_id,))
+            booking = cursor.fetchone()
+
+            if not booking:
+                bot.answer_callback_query(call.id, "❌ У вас нет активной аренды.")
+                return
+
+            service = booking["service"]
+            car_station = booking["station"]
+            car_id = booking["car_id"]
+
+            if service == "rental":
+                cursor.execute("""
+                    SELECT rh.id AS rental_id, rh.start_time, rh.end_time, rh.rent_start, rh.rent_end, rh.car_id, rh.status,
+                           c.price AS daily_price
+                    FROM rental_history rh
+                    JOIN cars c ON rh.car_id = c.car_id
+                    WHERE rh.user_id = ? AND rh.status = 'confirmed'
+                    ORDER BY rh.id DESC LIMIT 1
+                """, (user_id,))
+                rental = cursor.fetchone()
+
+                if not rental:
+                    bot.send_message(user_id, "❌ Не удалось найти активную аренду в истории.")
+                    return
+
+                current_end = datetime.strptime(rental["end_time"], "%Y-%m-%d %H:%M:%S")
+                now = datetime.now()
+
+                if now > current_end:
+                    diff = now - current_end
+                    hours_overdue = math.ceil(diff.total_seconds() / 3600)
+                    base_hour_price = rental["daily_price"] / 24
+                    base_hour_price = round_to_nearest_five(base_hour_price)
+                    final_hour_price = round_to_nearest_five(base_hour_price * 2)
+                    penalty = final_hour_price * hours_overdue
+
+                    deposit = 10000
+                    refund = deposit - penalty
+                    if refund < 0:
+                        refund = 0
+
+                    msg = (
+                        f"⏰ Внимание! Ваша заявка была просрочена на {hours_overdue} часов.\n"
+                        f"Если нет штрафов и нарушений, мы вернем вам {refund} рублей из депозита.\n"
+                        f"Пожалуйста, вернитесь на станцию: {car_station}\n"
+                        f"🚗 Подготовьте машину к сдаче."
+                    )
+                else:
+                    msg = (
+                        f"📍 Вернитесь на станцию: {car_station}\n"
+                        f"🚗 Подготовьте машину к сдаче.\n"
+                        f"Время окончания аренды: {current_end.strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+
+                bot.send_message(user_id, msg)
+
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("✅ Я на месте", callback_data=f"return_arrived_{booking['booking_id']}"))
+                bot.send_message(user_id, "👇 Подтвердите прибытие:", reply_markup=markup)
+
+
+            else:
+
+                set_state(user_id, f"waiting_for_time_selection|return|{car_id}")
+                send_date_buttons(user_id)
+                return
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("return_arrived_"))
+def handle_return_arrival(call):
+    booking_id = int(call.data.split("_")[-1])
+    user_id = call.from_user.id
+
+    with db_lock:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT b.*, u.name, u.phone, c.brand_model, c.year, c.number, c.station, rh.end_time
+            FROM bookings b
+            JOIN users u ON b.user_id = u.telegram_id
+            JOIN cars c ON b.car_id = c.car_id
+            JOIN rental_history rh ON rh.car_id = b.car_id AND rh.user_id = b.user_id
+            WHERE b.id = ?
+        """, (booking_id,))
+        booking = cur.fetchone()
+
+        if not booking:
+            bot.send_message(user_id, "❌ Ошибка: бронь не найдена.")
+            return
+
+        operator_id = STATION_OPERATORS.get(booking["station"])
+        if not operator_id:
+            bot.send_message(user_id, "⚠️ Ошибка: оператор станции не найден.")
+            return
+
+        # Сообщение оператору
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            "🔑 Ключ принят",
+            callback_data=f"return_done_{booking_id}_{booking['car_id']}"
+        ))
+        bot.send_message(operator_id,
+                         f"🚗 Возврат машины:\n"
+                         f"Марка: {booking['brand_model']} ({booking['year']})\n"
+                         f"Госномер: {booking['number']}\n"
+                         f"Станция: {booking['station']}\n"
+                         f"👤 Клиент: {booking['name']} ({booking['phone']})\n"
+                         f"Пожалуйста, примите машину.",
+                         reply_markup=markup)
+
+        bot.send_message(user_id, "✅ Оператору отправлено уведомление. Пожалуйста, передайте ключи.")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("return_done_"))
+def handle_return_done(call):
+    _, _, booking_id_str, car_id_str = call.data.split("_")
+    booking_id = int(booking_id_str)
+    car_id = int(car_id_str)
+
+    with db_lock:
+        conn = get_db_connection()
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        # 1. Получаем бронь
+        cur.execute("SELECT * FROM bookings WHERE id = ?", (booking_id,))
+        booking = cur.fetchone()
+        if not booking:
+            bot.send_message(call.message.chat.id, "❌ Ошибка при получении данных бронирования.")
+            return
+
+        user_id = booking["user_id"]
+
+        # 2. Получаем rental_history
+        cur.execute("""
+            SELECT rh.*, c.price AS daily_price
+            FROM rental_history rh
+            JOIN cars c ON rh.car_id = c.car_id
+            WHERE rh.user_id = ? AND rh.car_id = ? AND rh.status = 'confirmed'
+            ORDER BY rh.id DESC LIMIT 1
+        """, (user_id, car_id))
+        rental = cur.fetchone()
+        if not rental:
+            bot.send_message(call.message.chat.id, "❌ Ошибка: не найдена запись об аренде.")
+            return
+
+        if not rental["end_time"]:
+            bot.send_message(call.message.chat.id, "❌ Ошибка: не указано время окончания аренды.")
+            return
+
+        # 3. Получаем данные клиента и машины
+        cur.execute("""
+            SELECT u.name, u.phone, c.brand_model, c.year, c.number, c.station
+            FROM users u
+            JOIN cars c ON c.car_id = ?
+            WHERE u.telegram_id = ?
+        """, (car_id, user_id))
+        info = cur.fetchone()
+        if not info:
+            bot.send_message(call.message.chat.id, "❌ Ошибка при получении данных пользователя или машины.")
+            return
+
+        # 4. Проверка на опоздание
+        return_time = datetime.now()
+        planned_end = datetime.strptime(rental["end_time"], "%Y-%m-%d %H:%M:%S")
+        late = return_time > planned_end
+        late_minutes = int((return_time - planned_end).total_seconds() // 60) if late else 0
+
+        # 5. Расчет возврата залога
+        deposit = 10000
+        refund_amount = deposit
+
+        if late:
+            hours_overdue = math.ceil(late_minutes / 60)
+            base_hour_price = rental["daily_price"] / 24
+            base_hour_price = round_to_nearest_five(base_hour_price)
+            final_hour_price = round_to_nearest_five(base_hour_price * 2)  # двойной тариф
+            penalty = final_hour_price * hours_overdue
+            refund_amount = max(deposit - penalty, 0)
+
+        # 6. Уведомление админов
+        for admin_id in ADMIN_ID:
+            bot.send_message(admin_id,
+                             f"✅ Машина возвращена:\n"
+                             f"Станция: {info['station']}\n"
+                             f"Модель: {info['brand_model']} ({info['year']})\n"
+                             f"Номер: {info['number']}\n"
+                             f"👤 Клиент: {info['name']} ({info['phone']})\n"
+                             f"{'⚠️ С опозданием на ' + str(late_minutes) + ' мин.' if late else '⏱ Вовремя'}\n\n"
+                             f"💰 К возврату из залога: {refund_amount} ₽")
+
+        # 7. Обновление статусов
+        cur.execute("UPDATE bookings SET status = 'completed' WHERE id = ?", (booking_id,))
+        cur.execute("UPDATE users SET status = 'new' WHERE telegram_id = ?", (user_id,))
+        cur.execute("UPDATE rental_history SET status = 'completed' WHERE id = ?", (rental["id"],))
+
+        conn.commit()
+
+        # 8. Сообщение пользователю
+        bot.send_message(user_id,
+                         "✅ Возврат успешно завершён.\n"
+                         "🔧 В течение 5 дней механик проверит автомобиль.\n"
+                         "💸 После этого залог будет возвращён.\n"
+                         "Спасибо, что воспользовались нашей арендой!")
+
+        bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("menu_"))
 def handle_main_menu_inline(call):
@@ -5510,6 +10709,7 @@ def send_profile_info(user_telegram_id, chat_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     print(user_telegram_id)
+
     cursor.execute("SELECT id FROM users WHERE telegram_id = ?", (user_telegram_id,))
     user = cursor.fetchone()
 
@@ -5519,46 +10719,78 @@ def send_profile_info(user_telegram_id, chat_id):
 
     user_id = user[0]
     print(user_id)
+
     cursor.execute('''
-        SELECT b.car_id, c.brand_model, c.year, c.transmission,
+        SELECT b.car_id, c.brand_model, c.year, c.transmission, c.price,
                b.service, b.date, b.time
         FROM bookings b
         JOIN cars c ON b.car_id = c.car_id
-        WHERE b.user_id = ? AND b.status = 'confirmed'
+        WHERE b.user_id = ? AND b.status = 'process'
         ORDER BY b.created_at DESC
         LIMIT 1
     ''', (user_telegram_id,))
     booking = cursor.fetchone()
 
     if booking:
-        car_id, brand_model, year, trans, service, date, time = booking
-        rent_start = date  # дата аренды
-        rent_end = date    # по умолчанию, но ниже можно будет заменить
-        print(car_id)
-        # Если прокат — ищем период в rental_history
+        car_id, brand_model, year, trans, base_price, service, date, time = booking
+        rent_start = date
+        rent_end = date  # временно
+
+        # 🔹 добавляем переменные по умолчанию
+        start_time = None
+        end_time = None
+
+        # Если это долгосрочная аренда — берём rent_end
         if service == "rental":
             cursor.execute('''
-                SELECT rent_start, rent_end FROM rental_history
+                SELECT rent_start, rent_end, start_time, end_time 
+                FROM rental_history
                 WHERE user_id = ? AND car_id = ?
                 ORDER BY id DESC LIMIT 1
             ''', (user_telegram_id, car_id))
             rent_info = cursor.fetchone()
-            print(rent_info)
             if rent_info:
-                rent_start, rent_end = rent_info
+                rent_start, rent_end, start_time, end_time = rent_info
 
-        total_price = calculate_rent_price(service, brand_model, year, rent_start, rent_end)
-        price_line = f"\n💰 <b>Стоимость:</b> {total_price:,} ₽ в день" if total_price else ""
+        # --- расчёт дней аренды ---
+        days = 1
+        try:
+            days = (datetime.strptime(rent_end, "%Y-%m-%d") - datetime.strptime(rent_start, "%Y-%m-%d")).days
+            days = max(days, 1)
+        except Exception as e:
+            print(f"[send_profile_info] Ошибка при подсчёте дней: {e}")
+
+        # --- расчёт цены ---
+        total_price = calculate_price(base_price, days)
+        price_line = f"\n💰 <b>Стоимость:</b> {total_price:,} ₽ за {days} дней" if total_price else ""
 
         if service == "rent":
             date_line = f"📆 Дата начала: {rent_start}"
         else:
             date_line = f"📆 Срок: {rent_start} - {rent_end}"
 
+        # --- формируем время ---
+        start_time_line = ""
+        if start_time:
+            try:
+                start_dt = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
+                start_time_line = f"🕒 Время начала: {start_dt.strftime('%Y-%m-%d %H:%M')}"
+            except:
+                start_time_line = f"🕒 Время начала: {start_time}"
+
+        end_time_line = ""
+        if end_time:
+            try:
+                end_dt = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
+                end_time_line = f"🕒 Время окончания: {end_dt.strftime('%Y-%m-%d %H:%M')}"
+            except:
+                end_time_line = f"🕒 Время окончания: {end_time}"
+
         text = (
             f"<b>Условия аренды:</b>\n"
-            f"{date_line}\n\n"
-
+            f"{date_line}\n"
+            f"{start_time_line}\n"
+            f"{end_time_line}\n\n"
             f"<b>Характеристики автомобиля:</b>\n"
             f"🚘 {brand_model} ({year})\n"
             f"🕹 Коробка: {trans}\n"
@@ -5571,42 +10803,13 @@ def send_profile_info(user_telegram_id, chat_id):
 
     conn.close()
 
-def calculate_rent_price(service, brand_model, year, rent_start, rent_end):
-    if service == "rent":
-        tariff_group = TARIFFS.get("Аренда", {})
-        model_tariffs = tariff_group.get(brand_model, {})
-        return model_tariffs.get(int(year))
-
-    elif service == "rental":
-        start = datetime.strptime(rent_start, "%Y-%m-%d")
-        end = datetime.strptime(rent_end, "%Y-%m-%d")
-        days = (end - start).days
-        if days <= 0:
-            return None
-
-        tariff_group = TARIFFS.get("Прокат", {}).get(brand_model, {})
-        best_match_price = None
-        for min_days, price_per_day in sorted(tariff_group.items(), reverse=True):
-            if days >= min_days:
-                best_match_price = days * price_per_day
-                break
-        return best_match_price
-
-    elif service == "buyout":
-        tariff_group = TARIFFS.get("Выкуп", {}).get(brand_model, {})
-        data = tariff_group.get(int(year))
-        if data:
-            return data["price_per_day"] * data["months"] * 30
-    return None
-
-
 def send_help_menu(message):
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
-        types.InlineKeyboardButton("Ремонт", callback_data="help_repair"),
-        types.InlineKeyboardButton("Записаться на мойку", callback_data="help_wash"),
-        types.InlineKeyboardButton("ДТП", callback_data="help_accident"),
-        types.InlineKeyboardButton("Задать админу вопрос", callback_data="help_question"),
+        types.InlineKeyboardButton("🔧 Ремонт", callback_data="help_repair"),
+        types.InlineKeyboardButton("🫧 Записаться на мойку", callback_data="help_wash"),
+        types.InlineKeyboardButton("⚠️ ДТП", callback_data="help_accident"),
+        types.InlineKeyboardButton("❓ Задать админу вопрос", callback_data="help_question"),
     )
     bot.send_message(message.chat.id, "🛠Выберите вариант помощи:", reply_markup=kb)
 temp_data = {}
@@ -5647,18 +10850,38 @@ def handle_help_accident(call):
 def handle_video_guide(call):
     chat_id = call.message.chat.id
 
-    instruction = (
+    # Инструкция действий при ДТП
+    accident_text = (
+        "🚨 *Инструкция действий клиента при ДТП:*\n\n"
+        "1️⃣ Не перемещайте автомобиль и предметы, имеющие отношение к происшествию.\n"
+        "2️⃣ Включите аварийную сигнализацию и установите знак аварийной остановки.\n"
+        "3️⃣ Позвоните 112 и потребуйте соединения с местным ГИБДД.\n"
+        "4️⃣ *Важно:* откажитесь от европротокола — вы арендуете авто, оформление должно быть через ГИБДД.\n"
+        "5️⃣ Сфотографируйте и снимите на видео:\n"
+        "— Повреждения автомобилей\n— Номера машин\n— Расположение ТС на дороге\n— Дорожные знаки и разметку\n"
+        "6️⃣ Свяжитесь с нашим менеджером и отправьте видео/фото. Желательно не менее 10 фото.\n"
+        "7️⃣ При оформлении ДТП: сфотографируйте объяснение, документы ГИБДД и передайте их при сдаче авто.\n"
+        "8️⃣ Убедитесь, что все повреждения зафиксированы и нет ошибок в документах.\n"
+        "9️⃣ Если будет разбор — обязательно присутствуйте и получите все итоговые документы.\n"
+        "🔟 *Если было освидетельствование — предоставьте акт.* Его отсутствие может повлиять на страховое решение.\n\n"
+        "⚠️ Отказ от медицинского освидетельствования = опьянение = полная материальная ответственность.\n"
+        "⚠️ Неисполнение этой инструкции ведёт к возмещению ущерба арендатором в полном объёме."
+    )
+
+    bot.send_message(chat_id, accident_text, parse_mode="Markdown")
+
+    # Инструкция по съёмке
+    video_instruction = (
         "📹 *Инструкция по съёмке места ДТП:*\n\n"
         "1. Снимите общую сцену с разных сторон.\n"
         "2. Покажите номера автомобилей.\n"
         "3. Запишите повреждения крупным планом.\n"
         "4. Зафиксируйте дорожные знаки, разметку, перекрестки.\n"
-        "5. Важно: чтобы видео было *чётким и без пауз*.\n\n"
-        "После съёмки — отправьте видео прямо сюда."
+        "5. Видео должно быть *чётким, без пауз и лишних разговоров*.\n\n"
+        "🎥 После съёмки — отправьте видео прямо сюда."
     )
 
-    bot.send_message(chat_id, instruction, parse_mode="Markdown")
-# Обработка входящего видео
+    bot.send_message(chat_id, video_instruction, parse_mode="Markdown")
 
 @bot.message_handler(content_types=['video'])
 def handle_video(message):
@@ -5764,7 +10987,7 @@ def get_last_confirmed_car_id(user_id):
         SELECT b.car_id, c.brand_model, c.year, c.transmission
         FROM bookings b
         JOIN cars c ON b.car_id = c.car_id
-        WHERE b.user_id = ? AND b.status = 'confirmed'
+        WHERE b.user_id = ? AND b.status = 'process'
         ORDER BY b.created_at DESC
         LIMIT 1
     ''', (user_id,))
@@ -5963,8 +11186,7 @@ def start_repair_request(user_id, chat_id, message):
     bot.send_message(
         chat_id,
         f"🚗 Ремонт автомобиля {brand_model} {year} ({transmission})\n📅 Выберите дату встречи:",
-        reply_markup=markup
-    )
+        reply_markup=markup)
     bot.register_next_step_handler(message, get_repair_date)
 
 
@@ -5973,19 +11195,27 @@ def get_repair_date(message):
     parsed = parse_russian_date(date_raw)
     if not parsed:
         bot.send_message(message.chat.id, "❌ Неверный формат даты. Пожалуйста, выберите дату с клавиатуры.")
-        bot.register_next_step_handler(message, get_repair_date)
+        bot.register_next_step_handler_by_chat_id(message.chat.id, get_repair_date)
         return
 
-    date_str = parsed.strftime('%Y-%m-%d')  # сохранить как ISO
+    # Убираем клавиатуру после выбора
+    bot.send_message(
+        message.chat.id,
+        f"📅 Вы выбрали дату: {date_raw}",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
+    date_str = parsed.strftime('%Y-%m-%d')
+    if message.chat.id not in temp_data:
+        temp_data[message.chat.id] = {}
     temp_data[message.chat.id]['date'] = date_str
     car_id = temp_data[message.chat.id]['car_id']
 
-    # Отправляем инлайн-клавиатуру с выбором времени
     service = 'repair'
-    if not send_time_selection(message.chat.id, service, car_id, date_str):
-        bot.send_message(message.chat.id, "⛔ Нет доступных времён на этот день. Попробуйте выбрать другую дату.")
-        bot.register_next_step_handler(message, get_repair_date)
 
+    if not sending_time_selection(message.chat.id, service, car_id, date_str):
+        bot.send_message(message.chat.id, "⛔ Нет доступных времён на этот день. Попробуйте выбрать другую дату.")
+        bot.register_next_step_handler_by_chat_id(message.chat.id, get_repair_date)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('chosen_time'))
 def callback_select_time(call):
@@ -6059,32 +11289,17 @@ def callback_select_time(call):
             reply_markup=markup
         )
 
-@bot.message_handler(commands=['show_bookings'])
-def show_bookings(message):
-    conn = sqlite3.connect('cars.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT id, service, car_id, user_id, date, time, status FROM bookings ORDER BY created_at DESC LIMIT 20")
-    rows = cursor.fetchall()
-    conn.close()
 
-    if not rows:
-        bot.send_message(message.chat.id, "Таблица bookings пуста.")
-        return
-
-    text = "Последние 20 записей в bookings:\n\n"
-    for row in rows:
-        booking_id, service, car_id, user_id, date_, time_, status = row
-        text += (f"ID: {booking_id}, Service: {service}, Car ID: {car_id}, User ID: {user_id}, "
-                 f"Date: {date_}, Time: {time_}, Status: {status}\n")
-
-    bot.send_message(message.chat.id, text)
 @bot.callback_query_handler(func=lambda call: call.data.startswith("repair_approve_"))
 def process_repair_approve(call):
     try:
         full_data = call.data[len("repair_approve_"):]
         parts = full_data.split("_")
-
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None
+        )
         if len(parts) != 4:
             raise ValueError(f"Недостаточно частей в callback_data: {parts}")
 
@@ -6131,11 +11346,22 @@ def process_repair_approve(call):
         )
 
         # Удаляем кнопки у администратора
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        try:
+            bot.edit_message_reply_markup(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=None
+            )
+        except telebot.apihelper.ApiTelegramException as e:
+            if "message is not modified" not in str(e):
+                raise
         bot.answer_callback_query(call.id, "Заявка подтверждена.")
 
     except Exception as e:
-        bot.answer_callback_query(call.id, f"Ошибка подтверждения: {e}")
+        error_text = f"Ошибка подтверждения: {e}"
+        if len(error_text) > 200:
+            error_text = error_text[:197] + "..."
+        bot.answer_callback_query(call.id, error_text)
         print(f"❌ Ошибка в process_repair_approve: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("repair_suggest_") and
@@ -6155,22 +11381,98 @@ def process_repair_suggest(call):
         bot.answer_callback_query(call.id, "Некорректный формат данных.")
         return
 
-    chat_id = call.message.chat.id
-
+    # Сохраняем в сессию
     session = get_session(user_id) or {}
-    date_str = session.get('repair_suggest_date')
-    if not date_str:
-        bot.send_message(chat_id, "❌ Не найдена дата для предложения ремонта.")
-        return
-
     session['repair_suggest_car_id'] = car_id
     session['repair_suggest_user_id'] = user_id
-    repair_selected_suggest[chat_id] = (car_id, user_id)
+    session['repair_suggest_date'] = None
     save_session(user_id, session)
 
-    bot.answer_callback_query(call.id)
-    show_repair_admin_suggest_calendar(call.message, car_id, user_id, date_str)
+    # ⬅ Вот это нужно, чтобы ловить сообщение с датой
+    repair_selected_suggest[call.message.chat.id] = (car_id, user_id)
 
+    bot.answer_callback_query(call.id)
+    show_repair_admin_date_calendar(call.message)
+
+def show_repair_admin_date_calendar(message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
+    booked_dates_and_times = get_booked_dates_and_times_repair()
+    booked_dates = {date for date, _ in booked_dates_and_times}
+
+    today = datetime.today()
+    buttons = []
+
+    for i in range(30):
+        day = today + timedelta(days=i)
+        day_num = day.day
+        month_name = list(MONTHS_RU_GEN.keys())[day.month - 1]
+        button_text = f"{day_num} {month_name}"
+        buttons.append(types.KeyboardButton(button_text))
+
+    for i in range(0, len(buttons), 3):
+        markup.row(*buttons[i:i + 3])
+
+    markup.add(types.KeyboardButton("🔙 Отмена"))
+
+    bot.send_message(message.chat.id, "📅 Выберите дату для предложения клиенту:", reply_markup=markup)
+
+
+
+@bot.message_handler(func=lambda message: message.chat.id in repair_selected_suggest)
+def handle_repair_suggest_date_choice(message):
+    admin_id = message.from_user.id
+    car_id, target_user_id = repair_selected_suggest.get(message.chat.id, (None, None))
+    if not car_id:
+        bot.send_message(message.chat.id, "❌ Данные не найдены.")
+        return
+
+    MONTHS_RU = {
+        "янв": 1, "января": 1,
+        "фев": 2, "февраля": 2,
+        "мар": 3, "марта": 3,
+        "апр": 4, "апреля": 4,
+        "май": 5, "мая": 5,
+        "июн": 6, "июня": 6,
+        "июл": 7, "июля": 7,
+        "авг": 8, "августа": 8,
+        "сен": 9, "сентября": 9,
+        "окт": 10, "октября": 10,
+        "ноя": 11, "ноября": 11,
+        "дек": 12, "декабря": 12
+    }
+
+    try:
+        now = datetime.now()
+        parts = message.text.strip().lower().split()
+        if len(parts) != 2:
+            raise ValueError("Wrong format")
+        day = int(parts[0])
+        month = MONTHS_RU.get(parts[1])
+        if not month:
+            raise ValueError("Unknown month")
+
+        chosen_date = datetime(year=now.year, month=month, day=day)
+        if chosen_date.date() < now.date():
+            chosen_date = chosen_date.replace(year=now.year + 1)
+
+        date_str = chosen_date.strftime("%Y-%m-%d")
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Неверный формат даты. Пример: 10 авг")
+        return
+
+    session['repair_suggest_date'] = date_str
+    save_session(admin_id, session)
+
+    car_id, target_user_id = repair_selected_suggest.pop(message.chat.id, (None, None))
+    if not car_id or not target_user_id:
+        bot.send_message(message.chat.id, "❌ Не удалось найти данные для продолжения.")
+        return
+    bot.send_message(
+        message.chat.id,
+        f"📅 Вы выбрали дату: {message.text}. Теперь выберите время:",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    show_repair_admin_suggest_calendar(message, car_id, target_user_id, date_str)
 def show_repair_admin_suggest_calendar(message, car_id, user_id, date_str):
     conn = sqlite3.connect('cars.db')
     c = conn.cursor()
@@ -6180,114 +11482,174 @@ def show_repair_admin_suggest_calendar(message, car_id, user_id, date_str):
 
     keyboard = types.InlineKeyboardMarkup(row_width=3)
     for hour in range(10, 19):
-        time_str = f"{hour:02d}:00"
-        if time_str in booked_times:
-            btn = types.InlineKeyboardButton(f"⛔ {time_str}", callback_data="busy")
-        else:
-            btn = types.InlineKeyboardButton(time_str,
-                callback_data=f"repair_suggest_time_{car_id}_{user_id}_{date_str}_{time_str}")
-        keyboard.add(btn)
+        for minute in range(0, 60, 30):  # каждые 10 минут
+            time_str = f"{hour:02}:{minute:02}"
+            if time_str in booked_times:
+                btn = types.InlineKeyboardButton(f"⛔ {time_str}", callback_data="busy")
+            else:
+                btn = types.InlineKeyboardButton(time_str,
+                    callback_data=f"repair_suggest_time_{car_id}_{user_id}_{date_str}_{time_str}")
+            keyboard.add(btn)
 
     bot.send_message(message.chat.id, f"Выберите время для ремонта:", reply_markup=keyboard)
 
-@bot.message_handler(func=lambda message: message.text and message.chat.id in repair_selected_suggest)
+@bot.message_handler(func=lambda message: message.chat.id in repair_selected_suggest)
 def handle_repair_suggest_date_choice(message):
+
+    bot.edit_message_reply_markup(
+        chat_id=message.chat.id,
+        message_id=message.message_id,
+        reply_markup=None
+    )
+    MONTHS_RU = {
+        "янв": 1, "января": 1,
+        "фев": 2, "февраля": 2,
+        "мар": 3, "марта": 3,
+        "апр": 4, "апреля": 4,
+        "май": 5, "мая": 5,
+        "июн": 6, "июня": 6,
+        "июл": 7, "июля": 7,
+        "авг": 8, "августа": 8,
+        "сен": 9, "сентября": 9,
+        "окт": 10, "октября": 10,
+        "ноя": 11, "ноября": 11,
+        "дек": 12, "декабря": 12
+    }
+
     text = message.text.strip()
+
+    # Отмена
     if text == "🔙 Отмена":
-        bot.send_message(message.chat.id, "Отменено.", reply_markup=types.ReplyKeyboardRemove())
+        bot.send_message(
+            message.chat.id,
+            "Отменено.",
+            reply_markup=types.ReplyKeyboardRemove()  # убрать обычные кнопки
+        )
         repair_selected_suggest.pop(message.chat.id, None)
         return
 
+    # Парсинг даты
     try:
         now = datetime.now()
-        chosen_date = datetime.strptime(text, "%d %b").replace(year=now.year)
+        parts = text.lower().split()
+        if len(parts) != 2:
+            raise ValueError
+
+        day = int(parts[0])
+        month = MONTHS_RU.get(parts[1])
+        if not month:
+            raise ValueError
+
+        chosen_date = datetime(year=now.year, month=month, day=day)
         if chosen_date.date() < now.date():
             chosen_date = chosen_date.replace(year=now.year + 1)
+
         date_str = chosen_date.strftime("%Y-%m-%d")
     except ValueError:
         bot.send_message(message.chat.id, "❌ Неверный формат даты. Пожалуйста, выберите дату с клавиатуры.")
         return
 
-    car_id, user_id = repair_selected_suggest[message.chat.id]
-    repair_selected_suggest.pop(message.chat.id, None)
+    # Получаем данные из словаря
+    car_id, user_id = repair_selected_suggest.pop(message.chat.id, (None, None))
+    if not car_id:
+        bot.send_message(message.chat.id, "❌ Данные не найдены.")
+        return
 
+    # Убираем обычные кнопки после выбора даты
+    bot.send_message(
+        message.chat.id,
+        f"📅 Дата выбрана: {text}. Теперь выберите время:",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
+    # Сохраняем в сессию
     session = get_session(user_id)
     session["repair_suggest_date"] = date_str
     save_session(user_id, session)
 
-    bot.send_message(message.chat.id, f"Дата выбрана: {text}. Теперь выберите время:",
-                     reply_markup=types.ReplyKeyboardRemove())
+    # Показ времени
     show_repair_time_selection(message, car_id, user_id, date_str)
 
 def show_repair_time_selection(message, car_id, user_id, date_str):
     with sqlite3.connect('cars.db', timeout=10) as conn:
         c = conn.cursor()
-        c.execute("SELECT time FROM repair_bookings WHERE car_id=? AND date=? AND status='confirmed'", (car_id, date_str))
+        c.execute("""
+            SELECT time FROM repair_bookings 
+            WHERE car_id=? AND date=? AND status='confirmed'
+        """, (car_id, date_str))
         booked_times = [row[0] for row in c.fetchall()]
-    # conn закрыт автоматически здесь
 
     keyboard = types.InlineKeyboardMarkup(row_width=3)
     for hour in range(10, 19):
-        time_str = f"{hour:02d}:00"
-        if time_str in booked_times:
-            btn = types.InlineKeyboardButton(f"⛔ {time_str}", callback_data="busy")
-        else:
-            btn = types.InlineKeyboardButton(time_str,
-                                             callback_data=f"repair_suggest_time_{car_id}_{user_id}_{date_str}_{time_str}")
-        keyboard.add(btn)
+        for minute in range(0, 60, 30):  # каждые 10 минут
+            time_str = f"{hour:02}:{minute:02}"
+            if time_str in booked_times:
+                btn = types.InlineKeyboardButton(f"⛔ {time_str}", callback_data="busy")
+            else:
+                btn = types.InlineKeyboardButton(
+                    time_str,
+                    callback_data=f"repair_suggest_time_{car_id}_{user_id}_{date_str}_{time_str}"
+                )
+            keyboard.add(btn)
 
-    bot.send_message(message.chat.id, f"Выберите время для ремонта:", reply_markup=keyboard)
+    bot.send_message(message.chat.id, "Выберите время для ремонта:", reply_markup=keyboard)
 
-    @bot.callback_query_handler(func=lambda call: call.data.startswith("repair_suggest_time_"))
-    def process_repair_time_selection(call):
-        print("callback received:", call.data)
-        bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("repair_suggest_time_"))
+def process_repair_time_selection(call):
+    # Убираем inline-кнопки из сообщения
+    bot.edit_message_reply_markup(
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        reply_markup=None
+    )
 
-        try:
-            data = call.data[len("repair_suggest_time_"):]
-            parts = data.split("_")
-            if len(parts) != 4:
-                bot.answer_callback_query(call.id, "❌ Некорректные данные.")
-                return
+    try:
+        data = call.data[len("repair_suggest_time_"):]
+        parts = data.split("_")
+        if len(parts) != 4:
+            bot.answer_callback_query(call.id, "❌ Некорректные данные.")
+            return
 
-            car_id = int(parts[0])
-            telegram_id = int(parts[1])
-            date_str = parts[2]
-            time_str = parts[3]
+        car_id = int(parts[0])
+        telegram_id = int(parts[1])
+        date_str = parts[2]
+        time_str = parts[3]
 
-            bot.answer_callback_query(call.id, text=f"Вы выбрали {date_str} {time_str}")
+        bot.answer_callback_query(call.id, text=f"Вы выбрали {date_str} {time_str}")
 
-            with db_lock:
-                with sqlite3.connect('cars.db', timeout=10) as conn:
-                    c = conn.cursor()
+        with db_lock:
+            with sqlite3.connect('cars.db', timeout=10) as conn:
+                c = conn.cursor()
+                c.execute("SELECT telegram_id FROM users WHERE id = ?", (telegram_id,))
+                result = c.fetchone()
+                if not result:
+                    bot.send_message(call.message.chat.id, "❌ Не найден пользователь.")
+                    return
 
-                    c.execute("SELECT telegram_id FROM users WHERE id = ?", (telegram_id,))
-                    result = c.fetchone()
-                    if not result:
-                        bot.send_message(call.message.chat.id, "❌ Не найден пользователь с таким telegram_id.")
-                        return
+                user_id = result[0]
+                service = 'repair'
 
-                    user_id = result[0]
+                c.execute("""
+                    INSERT INTO repair_bookings (user_id, car_id, service, date, time, status)
+                    VALUES (?, ?, ?, ?, ?, 'suggested')
+                """, (user_id, car_id, service, date_str, time_str))
+                conn.commit()
 
-                    service = 'repair'
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            "OK",
+            callback_data=f"repair_ok_{service}_{car_id}_{user_id}_{date_str}_{time_str}"
+        ))
 
-                    c.execute('''INSERT INTO repair_bookings (user_id, car_id, service, date, time, status)
-                                 VALUES (?, ?, ?, ?, ?, 'suggested')''',
-                              (user_id, car_id, service, date_str, time_str))
-                    conn.commit()
+        bot.send_message(
+            user_id,
+            f"📩 Администратор предлагает: {date_str} в {time_str}\nЕсли согласны, нажмите кнопку ниже.",
+            reply_markup=markup
+        )
+        bot.send_message(call.message.chat.id, "✅ Предложение отправлено клиенту.")
 
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("OK",
-                                                  callback_data=f"repair_ok_{service}_{car_id}_{user_id}_{date_str}_{time_str}"))
-            bot.send_message(user_id,
-                             f"📩 Администратор предлагает: {date_str} в {time_str}\nЕсли согласны, нажмите кнопку ниже.",
-                             reply_markup=markup)
-            bot.send_message(call.message.chat.id, "✅ Предложение отправлено клиенту.")
-
-        except Exception as e:
-            bot.send_message(call.message.chat.id, f"❌ Ошибка: {e}")
-
-
+    except Exception as e:
+        bot.send_message(call.message.chat.id, f"❌ Ошибка: {e}")
     @bot.callback_query_handler(func=lambda call: call.data.startswith("repair_ok_"))
     def process_repair_ok(call):
         try:
@@ -6345,7 +11707,11 @@ def process_repair_reject(call):
     try:
         full_data = call.data[len("repair_reject_"):]
         parts = full_data.split("_")
-
+        bot.edit_message_reply_markup(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            reply_markup=None
+        )
         if len(parts) != 4:
             raise ValueError(f"Недостаточно частей в callback_data: {parts}")
 
@@ -6467,31 +11833,6 @@ def send_repair_requests(message):
 
 
 
-@bot.message_handler(commands=['set_new'])
-def set_user_status_new(message):
-    if message.from_user.id != ADMIN_ID2:
-        bot.reply_to(message, "⛔️ У вас нет доступа к этой команде.")
-        return
-
-    try:
-        parts = message.text.strip().split()
-        if len(parts) != 2:
-            bot.reply_to(message, "⚠️ Использование: /set_new <telegram_id>")
-            return
-
-        telegram_id = int(parts[1])
-
-        with sqlite3.connect("cars.db") as conn:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE users SET status = 'new' WHERE telegram_id = ?", (telegram_id,))
-            conn.commit()
-
-        bot.reply_to(message, f"✅ Статус пользователя {telegram_id} установлен как 'new'.")
-
-    except Exception as e:
-        print(f"[set_user_status_new] Ошибка: {e}")
-        bot.reply_to(message, "❌ Произошла ошибка при обновлении статуса.")
-
 
 @bot.callback_query_handler(func=lambda call: call.data == "help_wash")
 def handle_help_wash(call):
@@ -6559,7 +11900,7 @@ def add_booking_wash(user_id, date, time, name):
 
 def has_available_slots(date_str):
     booked = get_booked_dates_and_times_wash()
-    time_slots = [f"{h:02d}:{m:02d}" for h in range(9, 19) for m in (0, 30)]
+    time_slots = [f"{h:02d}:{m:02d}" for h in range(10, 19) for m in range(0, 60, 30)]
 
     date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
 
@@ -6578,7 +11919,7 @@ def create_date_markup_wash():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
     today = datetime.today().date()
 
-    for i in range(0, 14):  # Следующие 14 дней
+    for i in range(0, 30):  # Следующие 14 дней
         date = today + timedelta(days=i)
         date_str = date.strftime('%Y-%m-%d')
 
@@ -6601,7 +11942,7 @@ def create_time_markup(selected_date: str):
     now = datetime.now()
 
     # Временные слоты с 9:00 до 19:30
-    time_slots = [f"{h:02d}:{m:02d}" for h in range(9, 20) for m in (0, 30)]
+    time_slots = [f"{h:02d}:{m:02d}" for h in range(10, 19) for m in range(0, 60, 30)]
 
     available = []
     for slot in time_slots:
@@ -6630,16 +11971,30 @@ def get_booked_dates_and_times_wash():
 
 
 def send_booking_reminder():
-    now = datetime.now()
-    now_str = now.strftime("%Y-%m-%d %H:%M")
+    if not notify_lock.acquire(blocking=False):
+        print("[notify_admin] Пропуск — функция уже работает.")
+        return
 
+    start_time = datetime.now()
+    try:
+        print(f"[notify_admin] Запуск в {start_time}")
+
+        check_upcoming_washing()
+        check_broken_cars_and_notify()
+    except Exception as e:
+        print(f"[notify_admin] ❌ Ошибка верхнего уровня: {e}")
+    finally:
+        notify_lock.release()
+        print(f"[notify_admin] Завершено за {datetime.now() - start_time}")
+def check_upcoming_washing():
+    now = datetime.now()
     try:
         conn = sqlite3.connect("cars.db")
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # --- Обработка записей на мойку ---
-        cursor.execute("SELECT id, user_id, date, time FROM bookings_wash WHERE status = 'confirmed'")
+        # Выбираем все подтвержденные и ожидающие мойки
+        cursor.execute("SELECT id, user_id, date, time, status, notified FROM bookings_wash WHERE status IN ('confirmed', 'pending')")
         bookings = cursor.fetchall()
 
         for booking in bookings:
@@ -6647,48 +12002,58 @@ def send_booking_reminder():
             user_id = booking["user_id"]
             date = booking["date"]
             time_ = booking["time"]
-
+            status = booking["status"]
+            notified = bookings["notified"]
             booking_time = datetime.strptime(f"{date} {time_}", "%Y-%m-%d %H:%M")
             seconds_until = (booking_time - now).total_seconds()
             seconds_after = (now - booking_time).total_seconds()
 
-            # Напоминание за 1 час
-            if 3500 < seconds_until <= 3600:
+            # Напоминание за 1 час до мойки (только для pending)
+            if 0 < seconds_until <= 3600  and notified == 0:
                 bot.send_message(user_id, f"🔔 Напоминание: через 1 час мойка на {date} в {time_}.")
-
-            # Благодарность после 20-30 мин
-            elif 1340 < seconds_after <= 1440:
-                bot.send_message(user_id, f"✅ Спасибо! Ваша мойка на {date} в {time_} завершена.")
-                cursor.execute("DELETE FROM bookings_wash WHERE id = ?", (booking_id,))
+                cursor.execute("UPDATE bookings_wash SET status = 'confirmed' WHERE id = ?", (booking_id,))
+                cursor.execute("UPDATE bookings_wash SET notified = 1 WHERE id = ?", (booking_id,))
                 conn.commit()
 
-        # --- Обработка напоминаний о сдаче авто ---
-        cursor.execute("""
-            SELECT h.id, h.user_id, h.rent_end, u.telegram_id
-            FROM rental_history h
-            JOIN users u ON h.user_id = u.id
-        """)
-        rentals = cursor.fetchall()
 
-        for rental in rentals:
-            rent_end_str = rental["rent_end"]
-            rent_end = datetime.strptime(rent_end_str, "%Y-%m-%d %H:%M")
-            telegram_id = rental["telegram_id"]
 
-            # Напоминание за 1 сутки
-            notify_day_before = rent_end - timedelta(days=1)
-            if notify_day_before.strftime("%Y-%m-%d %H:%M") == now_str:
-                bot.send_message(telegram_id, f"📅 Напоминание: завтра вы должны сдать автомобиль в {rent_end.strftime('%H:%M')}.")
+            # Сообщение о завершении сразу после времени
+            elif 0 <= seconds_after <= 1800:  # до 30 минут после
+                bot.send_message(user_id, f"✅ Ваша мойка на {date} в {time_} завершена.")
+                cursor.execute("UPDATE bookings_wash SET status = 'completed' WHERE id = ?", (booking_id,))
+                conn.commit()
 
-            # Напоминание в 08:00 утра в день сдачи
-            notify_morning = rent_end.replace(hour=8, minute=0)
-            if notify_morning.strftime("%Y-%m-%d %H:%M") == now_str:
-                bot.send_message(telegram_id, f"🚗 Сегодня сдача автомобиля в {rent_end.strftime('%H:%M')} — не забудьте сообщить администратору!")
-
-    except Exception as e:
-        print(f"[ERROR] Ошибка в send_booking_reminder: {e}")
     finally:
         conn.close()
+        # --- Обработка напоминаний о сдаче авто ---
+        # cursor.execute("""
+        #     SELECT h.id, h.user_id, h.rent_end, u.telegram_id
+        #     FROM rental_history h
+        #     JOIN users u ON h.user_id = u.id
+        # """)
+        # rentals = cursor.fetchall()
+        #
+        # for rental in rentals:
+        #     rent_end_str = rental["rent_end"]
+        #     telegram_id = rental["telegram_id"]
+        #
+        #     try:
+        #         rent_end = datetime.strptime(rent_end_str, "%Y-%m-%d %H:%M")
+        #     except ValueError:
+        #         rent_end = datetime.strptime(rent_end_str, "%Y-%m-%d")
+        #         rent_end = rent_end.replace(hour=23, minute=59)  # или любое разумное значение
+        #
+        #     # Напоминание за 1 сутки
+        #     notify_day_before = rent_end - timedelta(days=1)
+        #     if notify_day_before.strftime("%Y-%m-%d %H:%M") == now_str:
+        #         bot.send_message(telegram_id,
+        #                          f"📅 Напоминание: завтра вы должны сдать автомобиль в {rent_end.strftime('%H:%M')}.")
+        #
+        #     # Напоминание в 08:00 утра в день сдачи
+        #     notify_morning = rent_end.replace(hour=8, minute=0)
+        #     if notify_morning.strftime("%Y-%m-%d %H:%M") == now_str:
+        #         bot.send_message(telegram_id,
+        #                          f"🚗 Сегодня сдача автомобиля в {rent_end.strftime('%H:%M')} — не забудьте сообщить администратору!")
 
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("help_question"))
@@ -6799,8 +12164,385 @@ def handle_time_pick(message):
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# Создаём глобальный scheduler
 
+@bot.message_handler(commands=['admin'])
+def admin_panel(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📋 Заявки", callback_data="admin_bookings"))
+    markup.add(types.InlineKeyboardButton("👤 Пользователи", callback_data="admin_users"))
+    markup.add(types.InlineKeyboardButton("👨‍💼 Операторы", callback_data="admin_operators"))
+    markup.add(types.InlineKeyboardButton("📊 Смены", callback_data="admin_shifts"))
+    markup.add(types.InlineKeyboardButton("⛽ Заправки", callback_data="admin_gas"))
+    markup.add(types.InlineKeyboardButton("🧼 Мойки", callback_data="admin_wash"))
+    markup.add(types.InlineKeyboardButton(" 🚗 Машины", callback_data="admin_avtopark"))
+    markup.add(types.InlineKeyboardButton("❓ Вопросы", callback_data="admin_questions"))
+    bot.send_message(message.chat.id, "🛠 Админ-панель", reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_questions")
+def handle_admin_questions(call):
+    bot.answer_callback_query(call.id)
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT * FROM questions
+            ORDER BY id DESC
+        """)
+        questions = cursor.fetchall()
+
+        if not questions:
+            bot.send_message(call.message.chat.id, "❓ Вопросов нет.")
+            return
+
+        for q in questions:
+            answered_status = "✅ Отвечено" if q["answered"] else "⏳ Не отвечено"
+            answer_text = q["answer_text"] if q["answer_text"] else "—"
+
+            text = (
+                f"❓ <b>Вопрос #{q['id']}</b>\n"
+                f"👤 Пользователь: @{q['username']} (ID: {q['user_id']})\n"
+                f"💬 Вопрос: {q['question_text']}\n"
+                f"📝 Ответ: {answer_text}\n"
+                f"📌 Статус: {answered_status}"
+            )
+
+            bot.send_message(call.message.chat.id, text, parse_mode="HTML")
+@bot.callback_query_handler(func=lambda call: call.data == "admin_gas")
+def handle_admin_gas(call):
+    bot.answer_callback_query(call.id)
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT * FROM history
+            ORDER BY Дата DESC
+        """)
+        records = cursor.fetchall()
+
+        if not records:
+            bot.send_message(call.message.chat.id, "⛽ Заправок нет.")
+            return
+
+        for record in records:
+            # перевод станции в адрес
+            address = STATION_NAMES.get(record['Адрес'], record['Адрес'])
+
+            text = (
+                f"⛽ <b>Заправка №{record['№']}</b>\n"
+                f"📅 Дата: {record['Дата']}\n"
+                f"🏢 Адрес: {address}\n"
+                f"⛽ Топливо: {record['Топливо']}\n"
+                f"💵 Рубли: {record['Рубли']}\n"
+                f"🧪 Литры: {record['Литры']}\n"
+                f"💳 Оплата: {record['Оплата']}\n"
+                f"👤 Telegram ID: {record['Telegram_ID']}"
+            )
+            bot.send_message(call.message.chat.id, text, parse_mode="HTML")
+
+
+STATUS_MAP = {
+    "pending": "В ожидании",
+    "confirmed": "Подтверждена",
+    "process": "В процессе"
+}
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_wash")
+def handle_admin_wash(call):
+    bot.answer_callback_query(call.id)
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT b.*, u.name as user_name, u.phone
+            FROM bookings_wash b
+            JOIN users u ON b.user_id = u.telegram_id
+            ORDER BY b.date DESC, b.time DESC
+        """)
+        bookings = cursor.fetchall()
+
+        if not bookings:
+            bot.send_message(call.message.chat.id, "🧼 Заявок на мойку нет.")
+            return
+
+        for booking in bookings:
+            status = STATUS_MAP.get(booking["status"], booking["status"])
+            text = (
+                f"🧼 <b>Заявка на мойку #{booking['id']}</b>\n"
+                f"👤 Клиент: {booking['user_name']} ({booking['phone']})\n"
+                f"📅 Дата: {booking['date']} {booking['time']}\n"
+                f"🚗 Название услуги: {booking['name']}"
+            )
+            bot.send_message(call.message.chat.id, text, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_shifts")
+def handle_admin_shifts(call):
+    bot.answer_callback_query(call.id)
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT s.*, o.name as operator_name 
+            FROM shifts s
+            LEFT JOIN operators o ON s.operator_id = o.id
+            ORDER BY s.id DESC
+        """)
+        shifts = cursor.fetchall()
+
+        if not shifts:
+            bot.send_message(call.message.chat.id, "📊 Смен нет.")
+            return
+
+        for shift in shifts:
+            # Перевод станции в адрес
+            station_key = shift["station"].replace(" ", "_").lower()
+            station_address = STATION_NAMES.get(station_key, shift["station"])
+
+            active_status = "🟢 Активна" if shift["active"] else "🔴 Неактивна"
+
+            text = (
+                f"🕒 <b>Смена #{shift['id']}</b>\n"
+                f"👨‍💼 Оператор: {shift['operator_name'] or '—'}\n"
+                f"🏢 Станция: {station_address}\n"
+                f"⚡ Статус: {active_status}\n"
+                f"⛽ Заправка (бензин): {shift['gasoline_liters']} л\n"
+                f"⛽ Заправка (газ): {shift['gas_liters']} л\n"
+                f"💰 Продажи: {shift['sales_sum']} ₽\n"
+                f"🎁 Бонус: {shift['bonus_sum']}\n"
+                f"🚗 Машин продано: {shift['cars_sold']}\n"
+                f"💰 Сумма продажи машин: {shift['sold_sum']}\n"
+                f"🕘 Начало: {shift['start_time'] or '—'}\n"
+                f"🕘 Конец: {shift['end_time'] or '—'}"
+            )
+
+            bot.send_message(call.message.chat.id, text, parse_mode="HTML")
+@bot.callback_query_handler(func=lambda call: call.data == "admin_operators")
+def handle_admin_operators(call):
+    bot.answer_callback_query(call.id)
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM operators ORDER BY id DESC")
+        operators = cursor.fetchall()
+
+        if not operators:
+            bot.send_message(call.message.chat.id, "👨‍💼 Операторов нет.")
+            return
+
+        for op in operators:
+            # Переводим station в адрес
+            station_key = op["station"].replace(" ", "_").lower()  # например "station 1" -> "station_1"
+            station_address = STATION_NAMES.get(station_key, op["station"])
+
+            registered_status = "✅ Зарегистрирован" if op["registered"] else "❌ Не зарегистрирован"
+            active_status = "🟢 Активен" if op["active"] else "🔴 Неактивен"
+
+            text = (
+                f"👨‍💼 <b>{op['name'] or '—'}</b>\n"
+                f"📞 Телефон: {op['phone'] or '—'}\n"
+                f"🏢 Станция: {station_address}\n"
+                f"🔑 PIN: {op['pin'] or '—'}\n"
+                f"📋 {registered_status}\n"
+                f"⚡ {active_status}"
+            )
+
+            bot.send_message(call.message.chat.id, text, parse_mode="HTML")
+
+user_photos_messages = {}
+
+# --- Обработчик кнопки "Пользователи" ---
+@bot.callback_query_handler(func=lambda call: call.data == "admin_users")
+def handle_admin_users(call):
+    bot.answer_callback_query(call.id)
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users ORDER BY id DESC")
+        users = cursor.fetchall()
+
+        if not users:
+            bot.send_message(call.message.chat.id, "👤 Пользователей нет.")
+            return
+
+        status_map = {
+            "new": "Новичок",
+            "waiting_car": "Скоро должен забрать авто/на оплате залога",
+            "waiting_rental": "Ждёт время аренды",
+            "using_car": "Использует машину"
+        }
+        purpose_map = {
+            "taxi": "Под такси",
+            "personal": "Личное пользование"
+        }
+
+        for user in users:
+            status_rus = status_map.get(user["status"], user["status"])
+            purpose_rus = purpose_map.get(user["purpose"], user["purpose"] or "—")
+
+            text = (
+                f"👤 <b>{user['name'] or '—'}</b>\n"
+                f"📌 Полное имя: {user['full_name'] or '—'}\n"
+                f"📞 Телеграм: {user['telegram_id']}\n"
+                f"📱 Телефон: {user['phone'] or '—'}\n"
+                f"📄 Статус: {status_rus}\n"
+                f"🎯 Цель: {purpose_rus}\n"
+                f"⭐ Бонусы: {user['bonus'] or 0}"
+            )
+
+            # Кнопка "Документы"
+            kb = types.InlineKeyboardMarkup()
+            kb.add(
+                types.InlineKeyboardButton(
+                    text="📎 Документы",
+                    callback_data=f"user_docs_{user['id']}"
+                )
+            )
+
+            bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=kb)
+
+
+# --- Обработчик кнопки "Документы" ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith("user_docs_"))
+def handle_user_docs(call):
+    user_id = int(call.data.split("_")[2])
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+
+    if not user:
+        bot.answer_callback_query(call.id, "Пользователь не найден.")
+        return
+
+    media = []
+    try:
+        if user["driver_license_photo"]:
+            media.append(types.InputMediaPhoto(user["driver_license_photo"], caption="Водительское удостоверение"))
+        if user["passport_front_photo"]:
+            media.append(types.InputMediaPhoto(user["passport_front_photo"], caption="Паспорт (лицевая сторона)"))
+        if user["passport_back_photo"]:
+            media.append(types.InputMediaPhoto(user["passport_back_photo"], caption="Паспорт (обратная сторона)"))
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Ошибка загрузки фото: {e}")
+        return
+
+    if media:
+        # Отправляем все фото одной группой
+        sent_msgs = bot.send_media_group(call.message.chat.id, media)
+        user_photos_messages[user_id] = [msg.message_id for msg in sent_msgs]
+
+        # Добавляем кнопку "Скрыть фото"
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("Скрыть фото", callback_data=f"hiden_docs_{user_id}"))
+        bot.send_message(call.message.chat.id, f"Документы пользователя {user['full_name'] or '—'}:", reply_markup=kb)
+    else:
+        bot.answer_callback_query(call.id, "Документы отсутствуют.")
+
+
+# --- Обработчик кнопки "Скрыть фото" ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith("hiden_docs_"))
+def handle_hide_docs(call):
+    user_id = int(call.data.split("_")[2])
+
+    # Удаляем все сообщения с медиа
+    if user_id in user_photos_messages:
+        for msg_id in user_photos_messages[user_id]:
+            try:
+                bot.delete_message(call.message.chat.id, msg_id)
+            except:
+                pass
+        del user_photos_messages[user_id]
+
+    # Удаляем сообщение с кнопкой
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    bot.answer_callback_query(call.id, "Документы скрыты.")
+@bot.callback_query_handler(func=lambda call: call.data == "admin_bookings")
+def handle_admin_bookings(call):
+    bot.answer_callback_query(call.id)
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Получаем все заявки
+        cursor.execute("""
+            SELECT b.*, u.name as user_name, u.phone
+            FROM bookings b
+            JOIN users u ON b.user_id = u.telegram_id
+            ORDER BY b.created_at DESC
+        """)
+        bookings = cursor.fetchall()
+
+        if not bookings:
+            bot.send_message(call.message.chat.id, "📋 Заявок нет.")
+            return
+
+        service_map = {
+            "rent": "Аренда",
+            "rental": "Прокат",
+            "gazel": "Аренда Газели",
+            "painter": "Малярка"
+        }
+        status_map = {
+            "pending": "В ожидании",
+            "confirmed": "Подтверждена",
+            "process": "В процессе",
+            "confirmed": "Заверешена"
+        }
+        deposit_map = {
+            "paid": "Внесён",
+            "unpaid": "Не внесён"
+        }
+
+        for booking in bookings:
+            service = service_map.get(booking["service"], booking["service"])
+            status = status_map.get(booking["status"], booking["status"])
+            deposit_status = deposit_map.get(booking["deposit_status"], booking["deposit_status"])
+
+            text = (
+                f"📋 <b>Заявка #{booking['id']}</b>\n"
+                f"👤 Клиент: {booking['user_name']} ({booking['phone']})\n"
+                f"🚗 Услуга: {service}\n"
+                f"📅 Дата: {booking['date']} {booking['time']}\n"
+                f"📦 Статус: {status}\n"
+                f"💰 Залог: {deposit_status}\n"
+            )
+            print(booking["user_id"], booking["car_id"])
+
+            # Если сервис rental — достаём доп.инфо из rental_history через JOIN
+            if booking["service"] == "rental":
+                cursor.execute("""
+                    SELECT rent_start, rent_end, price
+                    FROM rental_history
+                    WHERE user_id = ? AND car_id = ?
+                """, (booking["user_id"], booking["car_id"]))
+                rental_info = cursor.fetchone()
+                if rental_info:
+                    text += (
+                        f"📆 Период аренды: {rental_info['rent_start']} → {rental_info['rent_end']}\n"
+                        f"💵 Цена: {rental_info['price']} ₽\n"
+                    )
+            bot.send_message(call.message.chat.id, text, parse_mode="HTML")
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from threading import Thread
@@ -6809,6 +12551,319 @@ import time
 import sys
 
 scheduler = BackgroundScheduler()
+import telebot
+import openpyxl
+import os
+
+
+def access_check(func):
+    def wrapper(message, *args, **kwargs):
+        if message.from_user.id not in OPERATORS_IDS and message.from_user.id != ADMIN_ID:
+            return bot.reply_to(message, "Нет доступа к боту.")
+        return func(message, *args, **kwargs)
+
+    return wrapper
+
+
+# --- Команда админа для добавления оператора ---
+@bot.message_handler(commands=['add_operator'])
+
+def add_operator_step1(message):
+    if message.from_user.id != ADMIN_ID2:
+        return bot.reply_to(message, "Нет доступа.")
+    bot.send_message(message.chat.id, "Введите имя оператора:")
+    bot.register_next_step_handler(message, add_operator_step2)
+
+
+# Шаг 2 — ввод имени
+def add_operator_step2(message):
+    name = message.text.strip()
+    if not name:
+        return bot.send_message(message.chat.id, "Имя не может быть пустым. Попробуйте снова.")
+
+    bot.user_data = getattr(bot, "user_data", {})
+    bot.user_data[message.chat.id] = {"name": name}
+
+    bot.send_message(message.chat.id, "Введите номер телефона оператора:")
+    bot.register_next_step_handler(message, add_operator_step_phone)
+
+
+# Новый шаг — ввод телефона
+def add_operator_step_phone(message):
+    phone = message.text.strip()
+    if not phone:
+        return bot.send_message(message.chat.id, "Номер телефона не может быть пустым. Попробуйте снова.")
+
+    bot.user_data[message.chat.id]["phone"] = phone
+
+    # Показываем список адресов станций
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for address in STATION_CODES_TO_ADDRESSES.values():
+        markup.add(address)
+    bot.send_message(message.chat.id, "Выберите станцию:", reply_markup=markup)
+    bot.register_next_step_handler(message, add_operator_step3)
+
+
+# Шаг 3 — выбор станции и сохранение в БД
+def add_operator_step3(message):
+    address = message.text.strip()
+
+    station_code = None
+    for code, addr in STATION_CODES_TO_ADDRESSES.items():
+        if addr == address:
+            station_code = code
+            break
+
+    if not station_code:
+        return bot.send_message(message.chat.id, "Неверный адрес. Попробуйте снова.")
+
+    user_data = bot.user_data.get(message.chat.id, {})
+    name = user_data.get("name")
+    phone = user_data.get("phone")
+
+    if not name or not phone:
+        return bot.send_message(message.chat.id, "Ошибка: данные оператора не найдены. Начните заново.")
+
+    cursor.execute(
+        "INSERT INTO operators (name, phone, station) VALUES (?, ?, ?)",
+        (name, phone, station_code)
+    )
+    conn.commit()
+
+    bot.send_message(
+        message.chat.id,
+        f"✅ Оператор '{name}' с телефоном '{phone}' добавлен на станцию '{address}'.",
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+
+    bot.user_data.pop(message.chat.id, None)
+
+
+# --- Выбор имени ---
+user_password_wait = {}
+
+@bot.message_handler(func=lambda m: m.text in [row[0] for row in cursor.execute("SELECT name FROM operators").fetchall()])
+@access_check
+def choose_operator(message):
+    name = message.text.strip()
+    cursor.execute("SELECT id, registered FROM operators WHERE name=?", (name,))
+    op = cursor.fetchone()
+    if not op:
+        return bot.send_message(message.chat.id, "Оператор не найден.")
+
+    op_id, registered = op
+    if not registered:
+        bot.send_message(message.chat.id, "Придумайте 4-значный пароль:")
+        bot.register_next_step_handler(message, set_pin, op_id)
+    else:
+        user_password_wait[message.chat.id] = op_id
+        bot.send_message(message.chat.id, "Введите пароль:")
+
+
+@bot.message_handler(func=lambda m: m.chat.id in user_password_wait)
+def check_password(message):
+    # Сначала удаляем сообщение с паролем
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception as e:
+        print(f"Не удалось удалить сообщение: {e}")
+
+    if message.text == "/cancel":
+        user_password_wait.pop(message.chat.id, None)
+        bot.send_message(message.chat.id, "Ввод пароля отменён.")
+        start(message)
+        return
+
+    op_id = user_password_wait.pop(message.chat.id, None)
+    if not op_id:
+        bot.send_message(message.chat.id, "Сессия входа устарела. Выберите оператора заново.")
+        return
+
+    pin = message.text.strip()
+    cursor.execute("SELECT pin FROM operators WHERE id=?", (op_id,))
+    row = cursor.fetchone()
+    correct_pin = row[0] if row else None
+
+    if pin == correct_pin:
+        bot.send_message(message.chat.id, "Пароль верный. Добро пожаловать!")
+        show_operator_menu(message, op_id)
+    else:
+        bot.send_message(message.chat.id, "Неверный пароль. Попробуйте снова или выберите оператора заново.")
+def set_pin(message, op_id):
+    pin = message.text.strip()
+    if not (pin.isdigit() and len(pin) == 4):
+        return bot.send_message(message.chat.id, "Пароль должен быть из 4 цифр.")
+    cursor.execute("UPDATE operators SET pin=?, registered=1 WHERE id=?", (pin, op_id))
+    conn.commit()
+    bot.send_message(message.chat.id, "Регистрация завершена.")
+    show_operator_menu(message, op_id)
+
+
+def show_operator_menu(message, op_id):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    cursor.execute("SELECT 1 FROM shifts WHERE operator_id=? AND active=1", (op_id,))
+    markup.add("Начать смену")
+    markup.add("Назад")
+    bot.send_message(message.chat.id, "Меню:", reply_markup=markup)
+    bot.register_next_step_handler(message, handle_menu, op_id)
+
+
+def handle_menu(message, op_id):
+    actions = {
+        "Начать смену": start_shift,
+        "Закончить смену": end_shift,
+        "Назад": start
+    }
+    action = actions.get(message.text)
+    if action:
+        if message.text == "Назад":
+            action(message)
+        else:
+            action(message, op_id)
+    else:
+        bot.send_message(message.chat.id, "Неизвестная команда.")
+        show_operator_menu(message, op_id)
+
+
+def request_input(message, prompt, callback, op_id):
+    bot.send_message(message.chat.id, prompt)
+    bot.register_next_step_handler(message, callback, op_id)
+
+
+def start_shift(message, op_id):
+    # Получаем код станции и имя оператора
+    cursor.execute("SELECT station, name FROM operators WHERE id=?", (op_id,))
+    result = cursor.fetchone()
+    if not result:
+        bot.send_message(message.chat.id, "Ошибка: оператор не найден.")
+        return
+    station_code, operator_name = result
+    start_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # Вставляем новую запись в shifts с именем оператора
+    cursor.execute("""
+        INSERT INTO shifts (operator_id, station, active, start_time)
+        VALUES (?, ?, 1, ?)
+    """, (op_id, station_code, start_time))
+
+    # Обновляем статус оператора в таблице operators на active = 1
+    cursor.execute("""
+        UPDATE operators SET active=1 WHERE id=?
+    """, (op_id,))
+
+    conn.commit()
+
+    # Отправляем сообщение с удалением клавиатуры
+    markup = types.ReplyKeyboardRemove()
+    bot.send_message(message.chat.id, "Смена успешно начата.", reply_markup=markup)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("end_shift:"))
+def handle_end_shift_callback(call):
+    op_id = int(call.data.split(":")[1])
+    end_shift(call.message, op_id)
+    bot.answer_callback_query(call.id, "Смена завершена!")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("operator_choose:"))
+def handle_choose_operator_callback(call):
+    op_id = int(call.data.split(":")[1])
+    # Здесь вызывай логику выбора оператора — например, запрос пароля или сразу меню
+    # Например:
+    cursor.execute("SELECT registered FROM operators WHERE id=?", (op_id,))
+    registered = cursor.fetchone()[0]
+    if not registered:
+        bot.send_message(call.message.chat.id, "Придумайте 4-значный пароль:")
+        bot.register_next_step_handler(call.message, set_pin, op_id)
+    else:
+        user_password_wait[call.message.chat.id] = op_id
+        bot.send_message(call.message.chat.id, "Введите пароль:")
+    bot.answer_callback_query(call.id)
+
+
+def end_shift(message, op_id):
+    import sqlite3
+    from datetime import datetime
+
+    with sqlite3.connect("cars.db") as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Получаем смену
+        cursor.execute("""
+            SELECT gasoline_liters, gas_liters, sales_sum, bonus_sum, cars_sold, start_time, station
+            FROM shifts WHERE operator_id=? AND active=1
+        """, (op_id,))
+        shift = cursor.fetchone()
+
+        if not shift:
+            bot.send_message(message.chat.id, "Нет активной смены.")
+            return show_operator_menu(message, op_id)
+
+        gasoline, gas, sales_sum, bonus_sum, cars_sold, start_time, station_code = shift
+        end_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        # --- Проверка заправок ---
+        # Получаем адрес станции
+        station_address = STATION_CODES_TO_ADDRESSES.get(station_code, "Неизвестно")
+        print(station_address, start_time, end_time)
+        # Ищем заправки на этой станции за время смены
+        cursor.execute("""
+            SELECT "Telegram_ID"
+            FROM history
+            WHERE "Адрес" = ?
+              AND datetime("Дата") BETWEEN datetime(?) AND datetime(?)
+        """, (station_code, start_time, end_time))
+
+        fuel_records = cursor.fetchall()
+        print(fuel_records)
+        # Считаем количество заправок по каждому клиенту
+        from collections import Counter
+        counts = Counter([row["Telegram_ID"] for row in fuel_records])
+
+        # Получаем данные оператора
+        cursor.execute("SELECT name, phone FROM operators WHERE id=?", (op_id,))
+        op_info = cursor.fetchone()
+        operator_name = op_info["name"] if op_info else "Неизвестно"
+        operator_phone = op_info["phone"] if op_info else "Неизвестно"
+
+        # Проверяем превышение
+        for telegram_id, count in counts.items():
+            if count > 2:  # больше 2 заправок
+                # Имя пользователя
+                cursor.execute("SELECT name FROM users WHERE telegram_id=?", (telegram_id,))
+                user_name = cursor.fetchone()
+                user_name = user_name["name"] if user_name else "Неизвестный клиент"
+
+                bot.send_message(
+                    ADMIN_ID2,
+                    f"⚠️ Внимание!\n"
+                    f"Клиент *{user_name}* ({telegram_id}) заправлялся {count} раз(а) "
+                    f"на станции *{station_address}* во время смены.\n"
+                    f"Оператор: {operator_name}, Телефон: {operator_phone}",
+                    parse_mode="Markdown"
+                )
+
+        # --- Закрываем смену ---
+        cursor.execute("""
+            UPDATE shifts SET active=0, end_time=? WHERE operator_id=? AND active=1
+        """, (end_time, op_id))
+
+        cursor.execute("""
+            UPDATE operators SET active=0 WHERE id=?
+        """, (op_id,))
+
+        conn.commit()
+
+    bot.send_message(message.chat.id, f"""Смена завершена.
+Начало: {start_time}
+Конец: {end_time}
+Бензин: {gasoline} л
+Газ: {gas} л
+Сумма продаж: {sales_sum} руб
+Сумма продажи: {bonus_sum} бонусов
+Продано машин: {cars_sold}""")
+
+
+
 
 
 def shutdown_scheduler(signum, frame):
@@ -6817,24 +12872,26 @@ def shutdown_scheduler(signum, frame):
         scheduler.shutdown(wait=False)
     sys.exit(0)
 
+def run_flask():
+    app.run(host="0.0.0.0", port=8000)
 
 
 def start_scheduler():
-    # Добавляем задачи
     if not scheduler.get_job('notify_admin_job'):
         scheduler.add_job(notify_admin, 'interval', minutes=1, id='notify_admin_job')
     if not scheduler.get_job('reminder_job'):
-        scheduler.add_job(send_booking_reminder, 'interval', seconds=60, id='reminder_job')
-    if not scheduler.running:
-        scheduler.start()
+        scheduler.add_job(send_booking_reminder, 'interval', seconds=30, id='reminder_job')
 
 
+    if not scheduler.get_job('rental_pickup_notification'):
+        scheduler.add_job(send_pickup_notifications, 'cron', hour=8, minute=0, id='rental_pickup_notification')
+    if not scheduler.get_job('rental_late_pickup_notification'):
+        scheduler.add_job(send_late_pickup_notifications, 'cron', hour=12, minute=0, id='rental_late_pickup_notification')
 
-   
+
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, shutdown_scheduler)
     signal.signal(signal.SIGTERM, shutdown_scheduler)
-
 
     # Настройка и запуск планировщика
     start_scheduler()
@@ -6842,8 +12899,6 @@ if __name__ == "__main__":
     bot.set_webhook(url=WEBHOOK_URL)
     print(f"✅ Вебхук установлен: {WEBHOOK_URL}")
     setup_tables()
-    print("✅ Бот запущен") 
+    print("✅ Бот запущен")
     app.run(host="0.0.0.0", port=10000)
-   
-
 
