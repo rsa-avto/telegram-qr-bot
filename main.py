@@ -6896,6 +6896,30 @@ def admin_view_all_cars(call):
     refresh_markup.add(types.InlineKeyboardButton("🔄 Обновить", callback_data="refresh_admin_cars"))
     bot.send_message(chat_id, "📋 Нажмите, чтобы обновить список машин", reply_markup=refresh_markup)
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith("deletecar_"))
+def delete_car_handler(call):
+    try:
+        car_id = int(call.data.split("_")[1])
+
+        # Удаляем машину из БД
+        conn = sqlite3.connect("database.db")
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM cars WHERE id = ?", (car_id,))
+        conn.commit()
+        conn.close()
+
+        # Уведомляем пользователя
+        bot.answer_callback_query(call.id, "🚗 Машина удалена")
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="✅ Машина успешно удалена."
+        )
+
+    except Exception as e:
+        print(f"❌ Ошибка при удалении машины: {e}")
+        bot.answer_callback_query(call.id, "⚠ Ошибка при удалении")
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("togglebroken_"))
 def toggle_car_broken_status(call):
     _, car_id, new_status = call.data.split("_")
