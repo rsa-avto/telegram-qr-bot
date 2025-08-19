@@ -56,13 +56,21 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
 
+from flask import Flask, request
+import telebot
+
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
-        bot.process_new_updates([update])
-        return '', 200
-    return 'Unsupported Media Type', 415
+    try:
+        if request.headers.get("content-type") == "application/json":
+            json_str = request.get_data().decode("utf-8")
+            update = telebot.types.Update.de_json(json_str)
+            bot.process_new_updates([update])
+            return "OK", 200
+        return "Unsupported Media Type", 415
+    except Exception as e:
+        print(f"❌ Ошибка в webhook: {e}")
+        return f"Internal Server Error: {e}", 500
 
 
 @app.route("/", methods=["GET"])
