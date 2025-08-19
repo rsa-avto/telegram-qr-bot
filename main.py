@@ -97,7 +97,6 @@ PUBLIC_ID = 'cloudpayments-public-id'
 API_KEY = 'cloudpayments-api-key'
 DB_PATH = 'cars.db'
 db_lock = threading.Lock()
-app = Flask(__name__)
 bot.add_custom_filter(custom_filters.StateFilter(bot))
 
 geolocator = Nominatim(user_agent="tolyatti_car_rental_bot", timeout=20)
