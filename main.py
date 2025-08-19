@@ -28,7 +28,7 @@ from urllib.parse import unquote
 
 from aiofiles.os import remove
 
-from db_utils import execute_query
+from utils.db_utils import execute_query
 from geopy.distance import geodesic
 from telebot.apihelper import ApiTelegramException
 from telebot import types
