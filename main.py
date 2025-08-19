@@ -6902,7 +6902,7 @@ def delete_car_handler(call):
         car_id = int(call.data.split("_")[1])
 
         # Удаляем машину из БД
-        conn = sqlite3.connect("database.db")
+        conn = sqlite3.connect("cars.db")
         cursor = conn.cursor()
         cursor.execute("DELETE FROM cars WHERE car_id = ?", (car_id,))
         conn.commit()
