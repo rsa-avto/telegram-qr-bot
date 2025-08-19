@@ -12904,5 +12904,6 @@ if __name__ == "__main__":
     print(f"✅ Вебхук установлен: {WEBHOOK_URL}")
     setup_tables()
     print("✅ Бот запущен")
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
