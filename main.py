@@ -153,7 +153,7 @@ def setup_tables():
     # cursor.execute("DROP TABLE IF EXISTS users;")
     # cursor.execute("PRAGMA foreign_keys = ON;")
     # cursor.execute('DROP TABLE rental_history')
-
+    cursor.execute("ALTER TABLE bookings ADD COLUMN contract_file_id TEXT")
     #cursor.execute("ALTER TABLE bookings_wash ADD COLUMN notified INTEGER DEFAULT 0")
     #cursor.execute("ALTER TABLE shifts ADD COLUMN sold_sum INTEGER DEFAULT 0")
     #cursor.execute("ALTER TABLE bookings ADD COLUMN contract_file_id TEXT")
