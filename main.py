@@ -50,26 +50,25 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("❌ BOT_TOKEN не задан")
 
-# === Готовим URL для вебхука ===
 WEBHOOK_URL = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
 
-# === Инициализация бота и Flask ===
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-# === Роут вебхука ===
+
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    if request.is_json:
+    if request.headers.get('content-type') == 'application/json':
         update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
         bot.process_new_updates([update])
         return '', 200
     return 'Unsupported Media Type', 415
 
-# === Проверочный роут ===
+
 @app.route("/", methods=["GET"])
 def index():
     return "Бот работает!", 200
+
 
 ADMIN_ID = [5035760364]  # <-- ЗАМЕНИ на свой Telegram ID
 ADMIN_ID2 = 5035760364
@@ -12909,6 +12908,6 @@ if __name__ == "__main__":
     print(f"✅ Вебхук установлен: {WEBHOOK_URL}")
     setup_tables()
     print("✅ Бот запущен")
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=10000)
+
 
