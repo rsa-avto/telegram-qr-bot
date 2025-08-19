@@ -1432,7 +1432,7 @@ def set_user_status_new(message):
 
         with sqlite3.connect("cars.db") as conn:
             cursor = conn.cursor()
-            cursor.execute("UPDATE users SET status = 'waiting_car' WHERE telegram_id = ?", (telegram_id,))
+            cursor.execute("UPDATE users SET status = 'new' WHERE telegram_id = ?", (telegram_id,))
             conn.commit()
 
         bot.reply_to(message, f"✅ Статус пользователя {telegram_id} установлен как 'new'.")
@@ -1584,21 +1584,6 @@ def start(message):
                 if rent_start_date   == today  and deposit_status == "paid":
                     reply_kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
 
-                    reply_kb.add("💳 Оплатить онлайн", "ℹ️ Информация об аренде")
-
-                    bot.send_message(message.chat.id,
-
-                                     f"🚗 Привет, {name}! Ваша машина зарезервирована. Ожидаем дату начала аренды.",
-
-                                     reply_markup=reply_kb)
-
-
-
-                    return
-                else:
-
-                    reply_kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-
                     reply_kb.add("ℹ️ Информация об аренде", "📍 Я на месте")
 
                     reply_kb.add("❌ Отменить аренду")
@@ -1609,6 +1594,23 @@ def start(message):
 
                                      reply_markup=reply_kb)
 
+                    
+
+
+                    return
+                else:
+
+                    reply_kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+
+                    reply_kb.add("💳 Оплатить онлайн", "ℹ️ Информация об аренде")
+
+                    bot.send_message(message.chat.id,
+
+                                     f"🚗 Привет, {name}! Ваша машина зарезервирована. Ожидаем дату начала аренды.",
+
+                                     reply_markup=reply_kb)
+
+                    
 
 
             elif booking and booking["service"] == "rent":
@@ -1646,7 +1648,7 @@ def start(message):
             markup.add(
                 InlineKeyboardButton(
                     "🏠 Бронировать квартиры Тольятти",
-                    url="https://homereserve.ru/AACykQ"
+                    url="https://homereserve.ru/RRNTTTVoul?tag=%D1%82%D0%B5%D0%BB%D0%B5%D0%B3%D1%80%D0%B0%D0%BC"
                 )
             )
             markup.add(InlineKeyboardButton("🚕 Заказать такси", callback_data="taxi"))
@@ -1882,7 +1884,7 @@ def contact_handler(message):
     markup.add(
         InlineKeyboardButton(
             "🏠 Смотреть квартиры Тольятти",
-            url="https://yandex.ru/maps?whatshere%5Bpoint%5D=49.258310120938255%2C53.55394002594526&whatshere%5Bzoom%5D=12.109293&ll=49.25831012019384%2C53.553940026040266&z=12.109293&si=9w1gtgppfvdjfudny44z6dr2km"
+            url="https://homereserve.ru/RRNTTTVoul?tag=%D1%82%D0%B5%D0%BB%D0%B5%D0%B3%D1%80%D0%B0%D0%BC"
         )
     )
     markup.add(InlineKeyboardButton("🚕 Заказать такси", callback_data="taxi"))
@@ -4435,7 +4437,7 @@ def handle_waiting_car_actions(message):
         markup.add(
             InlineKeyboardButton(
                 "🏠 Бронировать квартиры Тольятти",
-                url="https://homereserve.ru/AACykQ"
+                url="https://homereserve.ru/RRNTTTVoul?tag=%D1%82%D0%B5%D0%BB%D0%B5%D0%B3%D1%80%D0%B0%D0%BC"
             )
         )
         markup.add(InlineKeyboardButton("🚕 Заказать такси", callback_data="taxi"))
@@ -12916,7 +12918,7 @@ def start_scheduler():
     if not scheduler.get_job('notify_admin_job'):
         scheduler.add_job(notify_admin, 'interval', minutes=1, id='notify_admin_job')
     if not scheduler.get_job('reminder_job'):
-        scheduler.add_job(send_booking_reminder, 'interval', seconds=30, id='reminder_job')
+        scheduler.add_job(send_booking_reminder, 'interval', seconds=70, id='reminder_job')
 
 
     if not scheduler.get_job('rental_pickup_notification'):
