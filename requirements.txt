@@ -7,4 +7,3 @@ schedule
 aiofiles
 geopy
 pytesseract
-sheduler
