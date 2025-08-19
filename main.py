@@ -12863,7 +12863,13 @@ def end_shift(message, op_id):
 Продано машин: {cars_sold}""")
 
 
+from apscheduler.schedulers.background import BackgroundScheduler
+from threading import Thread
+import signal
+import time
+import sys
 
+scheduler = BackgroundScheduler()
 
 
 def shutdown_scheduler(signum, frame):
@@ -12872,8 +12878,6 @@ def shutdown_scheduler(signum, frame):
         scheduler.shutdown(wait=False)
     sys.exit(0)
 
-def run_flask():
-    app.run(host="0.0.0.0", port=8000)
 
 
 def start_scheduler():
