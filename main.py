@@ -6904,7 +6904,7 @@ def delete_car_handler(call):
         # Удаляем машину из БД
         conn = sqlite3.connect("database.db")
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM cars WHERE id = ?", (car_id,))
+        cursor.execute("DELETE FROM cars WHERE car_id = ?", (car_id,))
         conn.commit()
         conn.close()
 
