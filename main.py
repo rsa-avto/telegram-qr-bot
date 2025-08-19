@@ -213,6 +213,7 @@ def setup_tables():
         deposit_status TEXT DEFAULT 'unpaid',
         docs_given INTEGER DEFAULT 0,
         keys_given INTEGER DEFAULT 0,
+        contract_file_id TEXT,
         FOREIGN KEY(user_id) REFERENCES users(id)
     );
     ''')
