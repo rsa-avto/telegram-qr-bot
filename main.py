@@ -2049,7 +2049,7 @@ def handle_gas(call):
     markup.add(InlineKeyboardButton("🎁 Баллы", callback_data="fuel_bonuses"))
     markup.add(InlineKeyboardButton("📍 Точки", callback_data="fuel_locations"))
     markup.add(InlineKeyboardButton("⛽️ Заправиться", callback_data="choose_address"))
-    bot.send_message(call.message.chat.id, "Выберите категорию Машины Элит:", reply_markup=markup)
+    bot.send_message(call.message.chat.id, "Заправки Элит Газ:", reply_markup=markup)
 
 def reset_state(chat_id):
     user_sessions[chat_id] = {
