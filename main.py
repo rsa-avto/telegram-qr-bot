@@ -58,12 +58,12 @@ ADMIN_ID2 = 6040726738
 ADMIN_ID3 =  1033210773#сто
 ADMIN_IDS = [5035760364, 6040726738,755909251]
 ADMINS = [6332859587, 755909251]
-DIRECTOR_ID = 755909251
+DIRECTOR_ID =755909251
 MASTER_CHAT_ID = 6486837861 #рихтовка
 DAN_TELEGRAM_ID = 5035760364
 OFFICE_COORDS = (53.548713,49.292195)
 TAXI_SETUP_MANAGER_ID = 1226760421
-OPERATORS_IDS = [8406093193, 7956696604, 1111111111, 8340223502]
+OPERATORS_IDS = [8406093193, 7956696604, 11111111, 8340223502]
 BONUS_PER_LITRE = 1
 STATION_OPERATORS = {
     "Южное шоссе 129": 8340223502,
@@ -2894,6 +2894,36 @@ def handle_qr(message):
     except Exception as e:
         print(f"Ошибка 2359: {e}")
 
+def safe_remove_buttons(chat_id, message_id):
+    try:
+        bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+    except Exception as e:
+        if "message is not modified" in str(e):
+            pass  # кнопки уже нет — игнорируем
+        else:
+            print(f"[UI ERROR] {e}")
+
+# Хелпер для безопасного редактирования текста
+def safe_edit_message_text(new_text, chat_id, message_id, reply_markup=None):
+    try:
+        old_text = ""  # по умолчанию, если text недоступен
+        try:
+            old_text = bot.get_message(chat_id, message_id).text
+        except:
+            pass
+        if old_text != new_text:
+            bot.edit_message_text(new_text, chat_id, message_id, reply_markup=reply_markup)
+        else:
+            # Меняем только кнопки, если текст не изменился
+            if reply_markup is not None:
+                safe_remove_buttons(chat_id, message_id)
+    except Exception as e:
+        if "message is not modified" in str(e):
+            pass
+        else:
+            print(f"[UI ERROR] {e}")
+
+
 @bot.callback_query_handler(func=lambda call: isinstance(call.data, str) and call.data.startswith(
     ("station_", "column_", "accepted_", "amount_", "pay_", "confirm", "cancel")
 ))
@@ -2901,14 +2931,10 @@ def callback_handler(call):
     try:
         chat_id = call.message.chat.id
         data = call.data
-        try:
-            bot.edit_message_reply_markup(
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=None
-            )
-        except Exception as e:
-            print(f"[UI ERROR] Не удалось убрать кнопку: {e}")
+
+        # Удаляем старые кнопки безопасно
+        safe_remove_buttons(chat_id, call.message.message_id)
+
         # Убедимся, что сессия для пользователя существует
         if chat_id not in user_sessions:
             user_sessions[chat_id] = {}
@@ -2923,36 +2949,32 @@ def callback_handler(call):
                 with sqlite3.connect("cars.db") as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
-                            SELECT 1 
-                            FROM shifts 
-                            WHERE station = ? AND active = 1
-                            LIMIT 1
-                        """, (station_code,))
+                        SELECT 1 
+                        FROM shifts 
+                        WHERE station = ? AND active = 1
+                        LIMIT 1
+                    """, (station_code,))
                     shift_exists = cursor.fetchone() is not None
 
                 if not shift_exists:
                     bot.answer_callback_query(call.id,
-                                              "❌ На этой заправка через тг бота отключена. Платите напрямую оператору или попросите его включить тг бота.",
+                                              "❌ На этой заправке через ТГ бота отключена. Платите напрямую оператору или попросите его включить ТГ бота.",
                                               show_alert=True)
-                    return  # Выходим, не показываем выбор колонки
+                    return
 
             except Exception as e:
                 print(f"[DB ERROR] {e}")
                 bot.answer_callback_query(call.id, "⚠️ Ошибка при проверке смены.", show_alert=True)
                 return
 
-            # Если смена есть — показываем выбор колонки
+            # Показываем выбор колонки
             markup = InlineKeyboardMarkup()
             markup.add(
                 InlineKeyboardButton("1", callback_data="column_1"),
                 InlineKeyboardButton("2", callback_data="column_2")
             )
-            bot.edit_message_text(
-                "Выберите колонку:",
-                chat_id,
-                call.message.message_id,
-                reply_markup=markup
-            )
+            safe_edit_message_text("Выберите колонку:", chat_id, call.message.message_id, reply_markup=markup)
+
         # === Выбор колонки ===
         elif data.startswith("column_"):
             user_sessions[chat_id]['column'] = data.split("_")[1]
@@ -2967,128 +2989,38 @@ def callback_handler(call):
                     InlineKeyboardButton("Литры", callback_data="amount_litres"),
                     InlineKeyboardButton("Полный бак", callback_data="fulltank")
                 )
-                bot.edit_message_text("На этой станции доступен только газ.\nВыберите способ ввода:", chat_id,
-                                      call.message.message_id, reply_markup=markup)
+                safe_edit_message_text("На этой станции доступен только газ.\nВыберите способ ввода:", chat_id,
+                                       call.message.message_id, reply_markup=markup)
             else:
                 markup = InlineKeyboardMarkup()
                 markup.add(
                     InlineKeyboardButton("Бензин", callback_data="fuel_benzin"),
                     InlineKeyboardButton("Газ", callback_data="fuel_gaz")
                 )
-                bot.edit_message_text("Выберите тип топлива:", chat_id, call.message.message_id, reply_markup=markup)
-        elif data.startswith("full_tank_start_"):
-            client_chat_id = int(data.split("_")[-1])
-            # Запоминаем в сессии, что начата заправка полного бака
-            price_change_sessions[client_chat_id] = {
-                'status': 'started',
-                'operator_chat_id': chat_id
-            }
-            bot.edit_message_text("Заправка начата. Когда закончите, отправьте количество литров:",
-                                  chat_id=chat_id,
-                                  message_id=call.message.message_id)
+                safe_edit_message_text("Выберите тип топлива:", chat_id, call.message.message_id, reply_markup=markup)
 
-
-        elif data.startswith("pay_cash_full_") or data.startswith("pay_card_full_"):
-            client_chat_id = int(data.split("_")[-1])
-            payment_method = 'cash' if data.startswith("pay_cash_full_") else 'card'
-
-            session = user_sessions.get(client_chat_id, {})
-            litres = price_change_sessions.get(client_chat_id, {}).get('litres', 0)
-            fuel = session.get('fuel')
-            price = 0
-            try:
-                with sqlite3.connect("cars.db") as conn:
-                    cur = conn.cursor()
-                    # Берём первую попавшуюся цену для выбранного топлива
-                    cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? AND payment_method = ? LIMIT 1", (fuel, payment_method))
-                    row = cur.fetchone()
-                    if row:
-                        price = row[0]
-            except Exception as e:
-                print(f"[fuel price] Ошибка: {e}")
-                price = 0
-            rub = round(litres * price, 2)
-
-            # Сохраняем оплату
-            user_sessions[client_chat_id]['amount'] = rub
-            user_sessions[client_chat_id]['litres'] = litres
-            user_sessions[client_chat_id]['payment_method'] = payment_method
-
-            bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id,
-                                          reply_markup=None)
-
-            bot.send_message(client_chat_id, f"Спасибо за оплату {'наличными' if payment_method == 'cash' else 'картой'}!")
-            # Здесь можно сохранить заказ в базу
-            save_to_db(client_chat_id)
-
-        elif data.startswith("full_tank_accepted_"):
-            client_chat_id = int(data.split("_")[-1])
-            operator_chat_id = call.message.chat.id
-
-            bot.edit_message_reply_markup(chat_id=operator_chat_id, message_id=call.message.message_id, reply_markup=None)
-
-            bot.send_message(operator_chat_id, "✅ Заказ принят оператором и завершён.")
-            bot.send_message(client_chat_id, "✅ Ваш заказ успешно подтверждён. Спасибо!")
-
-            # Очищаем сессии
-            user_sessions.pop(client_chat_id, None)
-            price_change_sessions.pop(client_chat_id, None)
-        # === Подтверждение заказа админом ===
-        elif data.startswith("accepted_"):
-            bot.answer_callback_query(call.id)  # ответим сразу
-            client_chat_id = int(data.split("_")[1])
-            session = user_sessions.get(client_chat_id, {}) or {}
-
-            # стараемся достать litres из сессии; если нет — 0
-            litres = session.get('litres', 0)
-            try:
-                litres = float(litres)
-            except Exception:
-                litres = 0.0
-
-            earned, total = add_bonus(client_chat_id, litres)
-
-            if earned > 0:
-                bot.send_message(client_chat_id, f"🎁 Вам начислено {earned} баллов!\n💰 Всего у вас: {total} баллов.")
-            else:
-                bot.send_message(client_chat_id, f"ℹ️ Баллы не начислены (литры: {litres}).")
-
-            bot.send_message(call.message.chat.id, "✅ Заказ подтверждён и сохранён в системе.")
+        # === Выбор способа ввода суммы или литров ===
         elif data in ["amount_rub", "amount_litres"]:
             user_sessions[chat_id]['amount_type'] = 'rub' if data == 'amount_rub' else 'litres'
-
-            # Удалим кнопки
-
             bot.send_message(chat_id, "Введите значение:")
 
-        # === Выбор способа оплаты ===
-        elif data in ["pay_cash", "pay_card"]:
-            # Удаляем кнопки
-            bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
-
-            user_sessions[chat_id]['payment_method'] = 'cash' if data == 'pay_cash' else 'card'
-            finalize_order(chat_id)
+        # === Подтверждение или отмена ===
         elif data == "confirm":
             client_chat_id = chat_id
             session = user_sessions.get(client_chat_id, {})
-            litres = session.get('litres', 0)
-            try:
-                litres = float(litres)
-            except:
-                litres = 0.0
+            litres = float(session.get('litres', 0))
             fuel = session.get('fuel')
             price = 0
             try:
                 with sqlite3.connect("cars.db") as conn:
                     cur = conn.cursor()
-                    # Берём первую попавшуюся цену для выбранного топлива
                     cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? LIMIT 1", (fuel,))
                     row = cur.fetchone()
                     if row:
                         price = row[0]
             except Exception as e:
                 print(f"[fuel price] Ошибка: {e}")
-                price = 0
+
             rub = round(litres * price, 2)
 
             if client_chat_id not in price_change_sessions:
@@ -3097,6 +3029,7 @@ def callback_handler(call):
             price_change_sessions[client_chat_id]['litres'] = litres
             price_change_sessions[client_chat_id]['status'] = 'litres_entered'
 
+            # Проверяем бонусы пользователя
             try:
                 with sqlite3.connect("cars.db") as conn:
                     cur = conn.cursor()
@@ -3120,13 +3053,12 @@ def callback_handler(call):
 
             text_client = f"Выберите способ оплаты:\nСумма: {rub} ₽"
             bot.send_message(client_chat_id, text_client, reply_markup=markup_client)
-        elif data == "cancel":
-            # Удаляем кнопки
-            bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=None)
 
+        elif data == "cancel":
             reset_state(chat_id)
             bot.send_message(chat_id, "❌ Операция отменена.")
             choose_address_menu(chat_id)
+
     except Exception as e:
         print(f"Ошибка 2578: {e}")
 
@@ -3173,12 +3105,18 @@ def amount_input_handler(msg):
         fuel_name = 'Бензин' if data['fuel'] == 'benzin' else 'Газ'
         price = 0
         try:
+            print("[LOOKUP] looking for:", repr(data['fuel']))
             with sqlite3.connect("cars.db") as conn:
                 cur = conn.cursor()
-                # Берём первую попавшуюся цену для выбранного топлива
-                cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? LIMIT 1", (data['fuel'],))
+                cur.execute("SELECT fuel_type, quote(fuel_type), length(fuel_type), price_per_litre FROM fuel")
+                print("[FUEL TABLE DUMP]")
+                for r in cur.fetchall():
+                    print("  ", r)
+                cur.execute("SELECT price_per_litre FROM fuel WHERE TRIM(fuel_type)=TRIM(?) LIMIT 1", (data['fuel'],))
                 row = cur.fetchone()
+                print("[SELECT RESULT]", row)
                 if row:
+                    print(price)
                     price = row[0]
         except Exception as e:
             print(f"[fuel price] Ошибка: {e}")
@@ -3305,6 +3243,7 @@ def start_full_tank_procedure(chat_id):
 
 
 def add_bonus(user_id, litres, fuel, payment_method):
+    print(user_id, litres, fuel, payment_method)
     try:
         """Начисляет бонусы пользователю за литры топлива по таблице fuel"""
         if litres <= 0:
@@ -3869,8 +3808,11 @@ def update_bonus(message):
         fuel = session["fuel"]
         payment_method = session["payment_method"]
 
+        ensure_fuel_rows()  # проверяем и создаём все комбинации
+
         with sqlite3.connect("cars.db") as conn:
             cur = conn.cursor()
+            # обновляем бонус только для выбранной комбинации
             cur.execute(
                 "UPDATE fuel SET bonuses = ? WHERE fuel_type = ? AND payment_method = ?",
                 (new_bonus, fuel, payment_method)
@@ -3878,7 +3820,8 @@ def update_bonus(message):
             conn.commit()
 
         bot.send_message(DIRECTOR_ID, f"✅ Бонусы для {fuel} ({payment_method}) обновлены: {new_bonus} баллов/л")
-        user_sessions.pop(DIRECTOR_ID, None)  # очищаем сессию
+        user_sessions.pop(DIRECTOR_ID, None)
+
     except Exception as e:
         bot.send_message(DIRECTOR_ID, f"❌ Ошибка при обновлении бонусов: {e}")
 @bot.callback_query_handler(func=lambda call: call.data in ["admin_set_price", "admin_set_bonus", "admin_set_operator"])
@@ -3971,6 +3914,31 @@ def ask_new_price(call):
         print(f"[ERROR] Ошибка 4014: {e}")
 
 # 3. Ввод новой цены
+def ensure_fuel_rows():
+    """Создаёт все комбинации топлива и способа оплаты, если их нет."""
+    fuels = ['benzin', 'gaz']
+    payments = ['cash', 'card']
+    try:
+        with sqlite3.connect("cars.db") as conn:
+            cur = conn.cursor()
+            for fuel in fuels:
+                for pay in payments:
+                    cur.execute(
+                        "SELECT 1 FROM fuel WHERE fuel_type = ? AND payment_method = ?",
+                        (fuel, pay)
+                    )
+                    if cur.fetchone() is None:
+                        # вставляем строку с ценой 0 и бонусами 0 по умолчанию
+                        cur.execute(
+                            "INSERT INTO fuel (fuel_type, payment_method, price_per_litre, bonuses) VALUES (?, ?, ?, ?)",
+                            (fuel, pay, 0.0, 0)
+                        )
+            conn.commit()
+    except Exception as e:
+        print(f"[DB ERROR] ensure_fuel_rows: {e}")
+
+
+# ====== Обновление цены ======
 @bot.message_handler(func=lambda m: m.chat.id == DIRECTOR_ID and "fuel_price" in user_sessions.get(DIRECTOR_ID, {}))
 def update_price(message):
     try:
@@ -3978,18 +3946,26 @@ def update_price(message):
         session = user_sessions[DIRECTOR_ID]
         fuel = session["fuel_price"]
 
+        ensure_fuel_rows()  # проверяем и создаём все комбинации
+
         with sqlite3.connect("cars.db") as conn:
             cur = conn.cursor()
-            cur.execute(
-                "UPDATE fuel SET price_per_litre = ? WHERE fuel_type = ?",
-                (new_price, fuel)
-            )
+            # обновляем цену для всех способов оплаты этого топлива
+            cur.execute("UPDATE fuel SET price_per_litre = ? WHERE fuel_type = ?", (new_price, fuel))
             conn.commit()
 
+            # лог таблицы
+            cur.execute("SELECT fuel_type, payment_method, price_per_litre, bonuses FROM fuel")
+            print("[FUEL TABLE]")
+            for r in cur.fetchall():
+                print(r)
+
         bot.send_message(DIRECTOR_ID, f"✅ Цена для {fuel} обновлена: {new_price:.2f} ₽/л (для всех способов оплаты)")
-        user_sessions.pop(DIRECTOR_ID, None)  # очищаем сессию
+        user_sessions.pop(DIRECTOR_ID, None)
+
     except Exception as e:
         bot.send_message(DIRECTOR_ID, f"❌ Ошибка при обновлении цены: {e}")
+
 
 
 @bot.message_handler(commands=['history'])
