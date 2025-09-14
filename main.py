@@ -1,6 +1,5 @@
 
-# -*- coding: utf-8 -*-
-
+# -*- coding: utf-8 new
 import html
 import difflib
 import re
