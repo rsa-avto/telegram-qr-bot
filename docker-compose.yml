@@ -10,7 +10,7 @@ services:
     container_name: tg_bot  
     restart: unless-stopped
     environment:
-      - BOT_TOKEN=8268892629:AAGwa-3ywqLyqtUpzCtdBhbR7L0IPkpyVzc
+      - BOT_TOKEN=8049195661:AAFb9pnBNyVbluJrKpYU5d3uqwdfONjeYQE
       - PUBLIC_ID=cloudpayments-public-id
       - API_KEY=cloudpayments-api-key
     ports:
