@@ -1,5 +1,6 @@
 
-# -*- coding: utf-8 new
+# -*- coding: utf-8 -*-
+
 import html
 import difflib
 import re
@@ -48,7 +49,7 @@ import os
 
 #6332859587
 # --- НАСТРОЙКИ ---
-API_TOKEN = os.environ.get("BOT_TOKEN") or '8049195661:AAFb9pnBNyVbluJrKpYU5d3uqwdfONjeYQE'
+API_TOKEN = os.environ.get("BOT_TOKEN") or '8268892629:AAGwa-3ywqLyqtUpzCtdBhbR7L0IPkpyVzc'
 
 bot = telebot.TeleBot(API_TOKEN)
 ADMIN_ID = [6040726738, 5035760364 ]  # <-- ЗАМЕНИ на свой Telegram ID
@@ -346,7 +347,7 @@ OPERATORS = {
     'station_1': 6332859587,
     'station_2': 7956696604,
     'station_3': 5035760364,
-    'station_4': 5035760364
+    'station_4': 8406093193
 }
 
 FUEL_PRICES = {
@@ -7118,8 +7119,10 @@ def handle_time_selection(call):
 
         message_text += delivery_info
 
-        # Отправляем админу
-        bot.send_message(ADMIN_ID2, message_text, reply_markup=markup)
+        if service == "return":
+            bot.send_message(ADMIN_ID2, message_text, reply_markup=markup)
+        else:
+            bot.send_message(DIRECTOR_ID, message_text, reply_markup=markup)
         bot.send_message(user_telegram_id, f"✅Отлично!\nМы Уже отправили заявку админу. Это может занять некоторое время")
 
     except Exception as e:
@@ -7329,7 +7332,7 @@ def process_approve(call):
                 reply_markup=markup
             )
         else:
-            OFFICE_ADDRESS = "г. Тольятти, ул. Борковская, д. 59"
+            OFFICE_ADDRESS = "г. Тольятти, ул. Южное шоссе, 35А"
             bot.send_message(
                 telegram_id,
                 f"✅ Ваша заявка на {service_display} одобрена!\n\n"
