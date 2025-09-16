@@ -1934,7 +1934,7 @@ def start(message):
                     markup.add(types.InlineKeyboardButton("📋 Таблицы", callback_data="admins_tables"))
                     markup.add(types.InlineKeyboardButton("🚗 Добавить машину", callback_data="admins_add_car"))
 
-                bot.send_message(user_id, "📋 Всё что вам нужно здесь", reply_markup=markup)
+                bot.send_message(user_id, "📋Привет! Всё что вам нужно здесь", reply_markup=markup)
 
             elif status == 'waiting_rental':
                 rental_menu_kb = types.InlineKeyboardMarkup()
