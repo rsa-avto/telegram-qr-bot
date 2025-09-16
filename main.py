@@ -1,9 +1,6 @@
 
 # -*- coding: utf-8 -*-
-<<<<<<< HEAD
-=======
 
->>>>>>> 9fa35ac (Мои изменения)
 import html
 import difflib
 import re
@@ -52,7 +49,7 @@ import os
 
 #6332859587
 # --- НАСТРОЙКИ ---
-API_TOKEN = os.environ.get("BOT_TOKEN") or '8268892629:AAGwa-3ywqLyqtUpzCtdBhbR7L0IPkpyVzc'
+API_TOKEN = os.environ.get("BOT_TOKEN") or '8049195661:AAFb9pnBNyVbluJrKpYU5d3uqwdfONjeYQE'
 
 bot = telebot.TeleBot(API_TOKEN)
 ADMIN_ID = [6040726738, 5035760364 ]  # <-- ЗАМЕНИ на свой Telegram ID
@@ -1905,7 +1902,7 @@ def start(message):
                     markup.add(types.InlineKeyboardButton("🎁 Сменить бонусы", callback_data="admin_set_bonus"))
                     markup.add(types.InlineKeyboardButton("💸 Список вакансий", callback_data="admin_set_job"))
                     markup.add(types.InlineKeyboardButton("👤 Добавить оператора", callback_data="admin_set_operator"))
-
+                    markup.add(types.InlineKeyboardButton("📢 Сделать рассылку", callback_data="admin_set_broadcast"))
                 if user_id in ADMIN_IDS:
                     markup.add(types.InlineKeyboardButton("📋 Таблицы", callback_data="admins_tables"))
                     markup.add(types.InlineKeyboardButton("🚗 Добавить машину", callback_data="admins_add_car"))
@@ -1928,7 +1925,7 @@ def start(message):
                     markup.add(types.InlineKeyboardButton("🎁 Сменить бонусы", callback_data="admin_set_bonus"))
                     markup.add(types.InlineKeyboardButton("💸 Список вакансий", callback_data="admin_set_job"))
                     markup.add(types.InlineKeyboardButton("👤 Добавить оператора", callback_data="admin_set_operator"))
-
+                    markup.add(types.InlineKeyboardButton("📢 Сделать рассылку", callback_data="admin_set_broadcast"))
                 if user_id in ADMIN_IDS:
                     markup.add(types.InlineKeyboardButton("📋 Таблицы", callback_data="admins_tables"))
                     markup.add(types.InlineKeyboardButton("🚗 Добавить машину", callback_data="admins_add_car"))
@@ -1962,7 +1959,7 @@ def start(message):
                     rental_menu_kb.add(types.InlineKeyboardButton("🎁 Сменить бонусы", callback_data="admin_set_bonus"))
                     rental_menu_kb.add(types.InlineKeyboardButton("💸 Список вакансий", callback_data="admin_set_job"))
                     rental_menu_kb.add(types.InlineKeyboardButton("👤 Добавить оператора", callback_data="admin_set_operator"))
-
+                    rental_menu_kb.add(types.InlineKeyboardButton("📢 Сделать рассылку", callback_data="admin_set_broadcast"))
                 if user_id in ADMIN_IDS:
                     rental_menu_kb.add(types.InlineKeyboardButton("📋 Таблицы", callback_data="admins_tables"))
                     rental_menu_kb.add(types.InlineKeyboardButton("🚗 Добавить машину", callback_data="admins_add_car"))
@@ -3851,6 +3848,53 @@ def handle_admin_buttons(call):
                 print(f"Ошибка 3956: {e}")
     except Exception as e:
         print(f"[ERROR] Ошибка 3950: {e}")
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_set_broadcast")
+def start_broadcast(call):
+    try:
+        if call.message.chat.id != DIRECTOR_ID:
+            bot.send_message(call.message.chat.id, "❌ У вас нет прав для этой команды.")
+            return
+
+        bot.send_message(DIRECTOR_ID, "Введите текст рассылки:")
+        bot.register_next_step_handler(call.message, process_broadcast)
+
+    except Exception as e:
+        print(f"[ERROR] Ошибка 3864: {e}")
+
+
+# 📢 Рассылка
+def process_broadcast(message):
+    try:
+        if message.chat.id != DIRECTOR_ID:   # ✅ тут должен быть message, а не call
+            return
+
+        text = message.text
+        sent_count, fail_count = 0, 0
+
+        with sqlite3.connect("cars.db") as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT telegram_id FROM users WHERE telegram_id IS NOT NULL")
+            rows = cur.fetchall()
+
+        for row in rows:
+            user_id = row[0]
+            try:
+                bot.send_message(user_id, text)
+                sent_count += 1
+            except Exception as e:
+                print(f"[BROADCAST ERROR] Не удалось отправить {user_id}: {e}")
+                fail_count += 1
+
+        bot.send_message(
+            DIRECTOR_ID,
+            f"✅ Рассылка завершена!\nОтправлено: {sent_count}\nОшибок: {fail_count}"
+        )
+
+    except Exception as e:
+        print(f"[ERROR] Ошибка 3892: {e}")
+
 @bot.callback_query_handler(func=lambda call: call.data in ["admin_set_job"])
 def admin_manage_jobs(call):
     try:
@@ -12005,7 +12049,8 @@ def show_main_menu(chat_id, edit_message_id=None):
                 types.InlineKeyboardButton("💰 Сменить цену топлива", callback_data="admin_set_price"),
                 types.InlineKeyboardButton("🎁 Сменить бонусы", callback_data="admin_set_bonus"),
                 types.InlineKeyboardButton("💸 Список вакансий", callback_data="admin_set_job"),
-                types.InlineKeyboardButton("👤 Добавить оператора", callback_data="admin_set_operator")
+                types.InlineKeyboardButton("👤 Добавить оператора", callback_data="admin_set_operator"),
+                types.InlineKeyboardButton("📢 Сделать рассылку", callback_data="admin_set_broadcast")
             )
         # 🔑 Если админ — добавляем свои кнопки
         if user_id in ADMIN_IDS:
