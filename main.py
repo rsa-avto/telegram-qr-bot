@@ -1,5 +1,9 @@
 
 # -*- coding: utf-8 -*-
+<<<<<<< HEAD
+=======
+
+>>>>>>> 9fa35ac (Мои изменения)
 import html
 import difflib
 import re

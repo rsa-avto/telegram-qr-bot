@@ -1,0 +1,21 @@
+version: "3.9"
+
+networks:
+  tg_bot_network:
+    driver: bridge
+
+services:
+  tg_bot:
+    build: .
+    container_name: tg_bot  
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=8268892629:AAGwa-3ywqLyqtUpzCtdBhbR7L0IPkpyVzc
+      - PUBLIC_ID=cloudpayments-public-id
+      - API_KEY=cloudpayments-api-key
+    ports:
+      - "8000:8000"   
+    volumes:
+      - /opt/tgbot_data/cars.db:/app/cars.db 
+    networks:
+      - tg_bot_network
