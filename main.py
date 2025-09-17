@@ -63,12 +63,12 @@ MASTER_CHAT_ID = 6486837861 #рихтовка
 DAN_TELEGRAM_ID = 5035760364
 OFFICE_COORDS = (53.548713,49.292195)
 TAXI_SETUP_MANAGER_ID = 1226760421
-OPERATORS_IDS = [8406093193, 7956696604, 5035760364, 8340223502]
+OPERATORS_IDS = [8406093193, 7956696604, 8411184981, 8340223502]
 BONUS_PER_LITRE = 1
 STATION_OPERATORS = {
     "Южное шоссе 129": 8340223502,
     "Южное шоссе 12/2": 7956696604,
-    "Лесная 66А": 5035760364,
+    "Лесная 66А": 8411184981,
     "Борковская 72/1": 8406093193
 }
 STATION_CODES_TO_ADDRESSES = {
@@ -346,7 +346,7 @@ months = {
 OPERATORS = {
     'station_1': 6332859587,
     'station_2': 7956696604,
-    'station_3': 5035760364,
+    'station_3': 8411184981,
     'station_4': 8406093193
 }
 
@@ -14077,9 +14077,9 @@ def handle_admin_gas(call):
             cursor = conn.cursor()
 
             cursor.execute("""
-                    SELECT * FROM history
-                    ORDER BY Дата DESC
-                """)
+                SELECT * FROM history
+                ORDER BY Дата DESC
+            """)
             records = cursor.fetchall()
 
             if not records:
@@ -14090,6 +14090,10 @@ def handle_admin_gas(call):
                 # перевод станции в адрес
                 address = STATION_NAMES.get(record['Адрес'], record['Адрес'])
 
+                cursor.execute("SELECT phone FROM users WHERE telegram_id = ?", (record["Telegram_ID"],))
+                phone_row = cursor.fetchone()
+                phone = phone_row["phone"] if phone_row else "—"
+
                 text = (
                     f"⛽ <b>Заправка №{record['№']}</b>\n"
                     f"📅 Дата: {record['Дата']}\n"
@@ -14098,19 +14102,12 @@ def handle_admin_gas(call):
                     f"💵 Рубли: {record['Рубли']}\n"
                     f"🧪 Литры: {record['Литры']}\n"
                     f"💳 Оплата: {record['Оплата']}\n"
-                    f"👤 Telegram ID: {record['Telegram_ID']}"
+                    f"👤 Телефон: {phone}"
                 )
                 bot.send_message(call.message.chat.id, text, parse_mode="HTML")
 
     except Exception as e:
         print(f"Ошибка 13220: {e}")
-
-STATUS_MAP = {
-    "pending": "В ожидании",
-    "confirmed": "Подтверждена",
-    "process": "В процессе"
-}
-
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_wash")
 def handle_admin_wash(call):
