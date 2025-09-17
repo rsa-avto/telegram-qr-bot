@@ -14024,7 +14024,7 @@ def admin_panel(message):
         if message.from_user.id == DIRECTOR_ID:
             markup.add(types.InlineKeyboardButton("Операторы", callback_data="admin_operators"))
             markup.add(types.InlineKeyboardButton("📊 Смены", callback_data="admin_shifts"))
-            markup.add(types.InlineKeyboardButton("⛽ Заправки", callback_data="admin_gasline"))
+            markup.add(types.InlineKeyboardButton("⛽ Заправки", callback_data="admin_gas"))
 
         bot.send_message(message.chat.id, "🛠 Админ-панель", reply_markup=markup)
     except Exception as e:
@@ -14067,9 +14067,8 @@ def handle_admin_questions(call):
     except Exception as e:
         print(f"Ошибка 13182: {e}")
 
-@bot.callback_query_handler(func=lambda call: call.data == "admin_gasline")
+@bot.callback_query_handler(func=lambda call: call.data == "admin_gas")
 def handle_admin_gas(call):
-    print(1)
     try:
         bot.answer_callback_query(call.id)
 
@@ -14078,9 +14077,9 @@ def handle_admin_gas(call):
             cursor = conn.cursor()
 
             cursor.execute("""
-                SELECT * FROM history
-                ORDER BY Дата DESC
-            """)
+                    SELECT * FROM history
+                    ORDER BY Дата DESC
+                """)
             records = cursor.fetchall()
 
             if not records:
@@ -14091,10 +14090,6 @@ def handle_admin_gas(call):
                 # перевод станции в адрес
                 address = STATION_NAMES.get(record['Адрес'], record['Адрес'])
 
-                cursor.execute("SELECT phone FROM users WHERE telegram_id = ?", (record["Telegram_ID"],))
-                phone_row = cursor.fetchone()
-                phone = phone_row["phone"] if phone_row else "—"
-
                 text = (
                     f"⛽ <b>Заправка №{record['№']}</b>\n"
                     f"📅 Дата: {record['Дата']}\n"
@@ -14103,7 +14098,7 @@ def handle_admin_gas(call):
                     f"💵 Рубли: {record['Рубли']}\n"
                     f"🧪 Литры: {record['Литры']}\n"
                     f"💳 Оплата: {record['Оплата']}\n"
-                    f"👤 Телефон: {phone}"
+                    f"👤 Telegram ID: {record['Telegram_ID']}"
                 )
                 bot.send_message(call.message.chat.id, text, parse_mode="HTML")
 
