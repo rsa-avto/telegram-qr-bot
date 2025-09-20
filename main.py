@@ -799,6 +799,39 @@ def show_raw_rental_history(message):
         bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
     finally:
         conn.close()
+@bot.message_handler(commands=['fuel'])
+def show_raw_rental_history(message):
+    import sqlite3
+    if message.from_user.id not in ADMIN_IDS:
+        return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
+
+    try:
+        conn = sqlite3.connect('cars.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM fuel ORDER BY id DESC")
+        rows = cursor.fetchall()
+
+        if not rows:
+            bot.send_message(message.chat.id, "📋 Таблица fuel пуста.")
+            return
+
+        for row in rows:
+            text = (
+                f"🧾 id: #{row['id']}\n"
+                f"👤 тип топлива: {row['fuel_type']}\n"
+                f"🚘 цена за литр: {row['price_per_litre']}\n"
+                f"📅 способ оплаты: {row['payment_method']}\n"
+                f"📅 баллы: {row['bonuses']}\n"
+            )
+
+            bot.send_message(message.chat.id, text)
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
+    finally:
+        conn.close()
 
 
 @bot.message_handler(commands=['list_users'])
