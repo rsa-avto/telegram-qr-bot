@@ -3440,10 +3440,14 @@ def handle_full_tank_litres_input(message):
 
         # Формируем кнопки
         markup_client = InlineKeyboardMarkup()
-        markup_client.add(
-            InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"),
-            InlineKeyboardButton("💳 Карта", callback_data=f"payment_card_full_{client_chat_id}")
-        )
+        if fuel == 'gaz':
+            markup_client.add(
+                InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"),
+                InlineKeyboardButton("💳 Карта", callback_data=f"payment_card_full_{client_chat_id}")
+            )
+        else:
+            markup_client.add(
+                InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"))
 
         # Если хватает баллов на всю сумму
         if current_bonus >= rub:
