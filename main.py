@@ -731,7 +731,39 @@ def send_long_message(chat_id, text, chunk_size=4000):
     for i in range(0, len(text), chunk_size):
         bot.send_message(chat_id, text[i:i + chunk_size])
 
+@bot.message_handler(commands=['bonus'])
+def add_bonus(message):
+    try:
+        # проверка прав
+        if message.from_user.id not in ADMIN_IDS and message.from_user.id != DIRECTOR_ID:
+            return bot.reply_to(message, "❌ У вас нет прав на эту команду.")
 
+        # разбор аргументов
+        args = message.text.split()
+        if len(args) != 3:
+            return bot.reply_to(message, "⚠️ Использование: /addbonus <telegram_id> <сумма>")
+
+        telegram_id = int(args[1])
+        amount = int(args[2])
+
+        with sqlite3.connect("cars.db") as conn:
+            cursor = conn.cursor()
+
+            # обновляем бонусы
+            cursor.execute(
+                "UPDATE users SET bonus = bonus + ? WHERE telegram_id = ?",
+                (amount, telegram_id)
+            )
+            conn.commit()
+
+            if cursor.rowcount == 0:
+                bot.reply_to(message, f"❌ Пользователь с telegram_id {telegram_id} не найден.")
+            else:
+                bot.reply_to(message, f"✅ Пользователю {telegram_id} добавлено {amount} бонусов.")
+
+    except Exception as e:
+        print(f"Ошибка add_bonus: {e}")
+        bot.reply_to(message, "⚠️ Ошибка при добавлении бонусов.")
 @bot.message_handler(commands=['history'])
 def show_history(message):
     try:
@@ -2762,18 +2794,24 @@ def handle_fuel(call):
             bot.send_message(call.message.chat.id, "Вот где ты можешь заправиться", reply_markup=markup)
 
 
+
         elif data == "bonuses":
             cursor.execute("SELECT bonus FROM users WHERE telegram_id = ?", (user_id,))
             result = cursor.fetchone()
             if result:
-                bonus = result[0]
-                count = int(bonus) % 10
-                word = "баллов" if count in [0, 5, 6, 7, 8, 9] else "балл" if count == 1 else "балла"
-                bot.send_message(chat_id, f"У вас {bonus} {word}")
+                bonus = float(result[0])  # преобразуем к float
+                bonus_str = f"{bonus:.1f}"  # округляем до 1 знака после запятой
+                # падежи для слова "балл"
+                last_digit = int(bonus) % 10
+                if last_digit == 1 and int(bonus) % 100 != 11:
+                    word = "балл"
+                elif last_digit in [2, 3, 4] and not (12 <= int(bonus) % 100 <= 14):
+                    word = "балла"
+                else:
+                    word = "баллов"
+                bot.send_message(chat_id, f"У вас {bonus_str} {word}")
             else:
                 bot.send_message(chat_id, "❌ Не удалось получить информацию о баллах.")
-
-
         elif data == "qr":
             cursor.execute("SELECT phone FROM users WHERE telegram_id = ?", (user_id,))
             result = cursor.fetchone()
@@ -2813,6 +2851,7 @@ def handle_fuel(call):
         bot.answer_callback_query(call.id)
     except Exception as e:
         print(f"Ошибка 2246: {e}")
+
 
 
 def generate_qr_code(data: str) -> BytesIO:
