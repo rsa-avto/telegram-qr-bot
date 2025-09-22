@@ -58,15 +58,19 @@ ADMIN_ID2 = 6040726738
 ADMIN_ID3 =  1033210773#сто
 ADMIN_IDS = [5035760364, 6040726738,755909251]
 ADMINS = [6332859587, 755909251]
-DIRECTOR_ID =755909251
+DIRECTOR_ID =    5035760364          #755909251
 MASTER_CHAT_ID = 6486837861 #рихтовка
 DAN_TELEGRAM_ID = 5035760364
 OFFICE_COORDS = (53.548713,49.292195)
 TAXI_SETUP_MANAGER_ID = 1226760421
+<<<<<<< HEAD
 OPERATORS_IDS = [8406093193, 7956696604, 8411184981, 8340223502]
+=======
+OPERATORS_IDS = [5035760364, 7956696604, 8411184981, 8340223502]#8411184981
+>>>>>>> 755e6a5 (Твои изменения)
 BONUS_PER_LITRE = 1
 STATION_OPERATORS = {
-    "Южное шоссе 129": 8340223502,
+    "Южное шоссе 129": 5035760364,
     "Южное шоссе 12/2": 7956696604,
     "Лесная 66А": 8411184981,
     "Борковская 72/1": 8406093193
@@ -344,7 +348,7 @@ months = {
     '10': 'Октябрь', '11': 'Ноябрь', '12': 'Декабрь'
 }
 OPERATORS = {
-    'station_1': 6332859587,
+    'station_1': 5035760364,
     'station_2': 7956696604,
     'station_3': 8411184981,
     'station_4': 8406093193
@@ -865,6 +869,39 @@ def show_raw_rental_history(message):
     finally:
         conn.close()
 
+@bot.message_handler(commands=['fuel'])
+def show_raw_rental_history(message):
+    import sqlite3
+    if message.from_user.id not in ADMIN_IDS:
+        return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
+
+    try:
+        conn = sqlite3.connect('cars.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM fuel ORDER BY id DESC")
+        rows = cursor.fetchall()
+
+        if not rows:
+            bot.send_message(message.chat.id, "📋 Таблица fuel пуста.")
+            return
+
+        for row in rows:
+            text = (
+                f"🧾 id: #{row['id']}\n"
+                f"👤 тип топлива: {row['fuel_type']}\n"
+                f"🚘 цена за литр: {row['price_per_litre']}\n"
+                f"📅 способ оплаты: {row['payment_method']}\n"
+                f"📅 баллы: {row['bonuses']}\n"
+            )
+
+            bot.send_message(message.chat.id, text)
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
+    finally:
+        conn.close()
 
 @bot.message_handler(commands=['list_users'])
 def list_users_handler(message):
@@ -3113,10 +3150,14 @@ def callback_handler(call):
                 current_bonus = 0
 
             markup_client = InlineKeyboardMarkup()
-            markup_client.add(
-                InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"),
-                InlineKeyboardButton("💳 Карта", callback_data=f"payment_card_full_{client_chat_id}")
-            )
+            if fuel == 'gaz':
+                markup_client.add(
+                    InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"),
+                    InlineKeyboardButton("💳 Карта", callback_data=f"payment_card_full_{client_chat_id}")
+                )
+            else:
+                markup_client.add(
+                    InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"))
 
             if current_bonus >= rub:
                 markup_client.add(
