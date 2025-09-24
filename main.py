@@ -49,7 +49,7 @@ import os
 
 #6332859587
 # --- НАСТРОЙКИ ---
-API_TOKEN = os.environ.get("BOT_TOKEN") or '6419852337:AAHQGZagCRReSMWwCEFdX5BVEn7IZHEbxVk'
+API_TOKEN = os.environ.get("BOT_TOKEN")
 
 bot = telebot.TeleBot(API_TOKEN)
 ADMIN_ID = [6040726738, 5035760364 ]  # <-- ЗАМЕНИ на свой Telegram ID
@@ -58,13 +58,12 @@ ADMIN_ID2 = 6040726738
 ADMIN_ID3 =  1033210773#сто
 ADMIN_IDS = [5035760364, 6040726738,755909251]
 ADMINS = [6332859587, 755909251]
-DIRECTOR_ID =5035760364
+DIRECTOR_ID =755909251
 MASTER_CHAT_ID = 6486837861 #рихтовка
 DAN_TELEGRAM_ID = 5035760364
 OFFICE_COORDS = (53.548713,49.292195)
 TAXI_SETUP_MANAGER_ID = 1226760421
-OPERATORS_IDS = [8406093193, 7956696604, 8411184981, 8340223502]#8411184981
-
+OPERATORS_IDS = [8406093193, 7956696604, 8411184981, 8340223502]
 BONUS_PER_LITRE = 1
 STATION_OPERATORS = {
     "Южное шоссе 129": 8340223502,
@@ -81,7 +80,19 @@ STATION_CODES_TO_ADDRESSES = {
 STATION_ADDRESSES_TO_CODES = {v: k for k, v in STATION_CODES_TO_ADDRESSES.items()}
 PUBLIC_ID = 'cloudpayments-public-id'
 API_KEY = 'cloudpayments-api-key'
-DB_PATH = "/app/cars.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Для Windows и локальной разработки
+if os.name == "nt":  # Windows
+    DB_PATH = os.path.join(BASE_DIR, "cars.db")
+else:  # Linux / Docker
+    DB_PATH = "/app/cars.db"
+
+# Подключение к базе
+import sqlite3
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+
+from flask import Flask
 app = Flask(__name__)
 
 # === Scheduler ===
