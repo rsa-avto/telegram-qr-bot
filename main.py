@@ -1,6 +1,6 @@
 
+# -*- coding: utf-8 -*-
 
-# -*- coding: utf-8 new
 import html
 import difflib
 import re
@@ -49,7 +49,7 @@ import os
 
 #6332859587
 # --- НАСТРОЙКИ ---
-API_TOKEN = os.environ.get("BOT_TOKEN")
+API_TOKEN = os.environ.get("BOT_TOKEN") or '8049195661:AAFb9pnBNyVbluJrKpYU5d3uqwdfONjeYQE'
 
 bot = telebot.TeleBot(API_TOKEN)
 ADMIN_ID = [6040726738, 5035760364 ]  # <-- ЗАМЕНИ на свой Telegram ID
@@ -58,21 +58,17 @@ ADMIN_ID2 = 6040726738
 ADMIN_ID3 =  1033210773#сто
 ADMIN_IDS = [5035760364, 6040726738,755909251]
 ADMINS = [6332859587, 755909251]
-DIRECTOR_ID =    5035760364          #755909251
+DIRECTOR_ID =755909251
 MASTER_CHAT_ID = 6486837861 #рихтовка
 DAN_TELEGRAM_ID = 5035760364
 OFFICE_COORDS = (53.548713,49.292195)
 TAXI_SETUP_MANAGER_ID = 1226760421
-<<<<<<< HEAD
-OPERATORS_IDS = [8406093193, 7956696604, 8411184981, 8340223502]
-=======
-OPERATORS_IDS = [5035760364, 7956696604, 8411184981, 8340223502]#8411184981
->>>>>>> 755e6a5 (Твои изменения)
+OPERATORS_IDS = [8406093193, 7956696604, 5035760364, 8340223502]
 BONUS_PER_LITRE = 1
 STATION_OPERATORS = {
-    "Южное шоссе 129": 5035760364,
+    "Южное шоссе 129": 8340223502,
     "Южное шоссе 12/2": 7956696604,
-    "Лесная 66А": 8411184981,
+    "Лесная 66А": 5035760364,
     "Борковская 72/1": 8406093193
 }
 STATION_CODES_TO_ADDRESSES = {
@@ -84,7 +80,7 @@ STATION_CODES_TO_ADDRESSES = {
 STATION_ADDRESSES_TO_CODES = {v: k for k, v in STATION_CODES_TO_ADDRESSES.items()}
 PUBLIC_ID = 'cloudpayments-public-id'
 API_KEY = 'cloudpayments-api-key'
-DB_PATH = 'cars.db'
+DB_PATH = "/app/cars.db"
 app = Flask(__name__)
 
 # === Scheduler ===
@@ -116,7 +112,7 @@ selected_dates = {}
 USER_SELECTED_DATE = {}
 selected_suggest = {}
 repair_selected_suggest = {}
-conn = sqlite3.connect('cars.db', check_same_thread=False)
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 admin_report_messages = {}
 user_car_messages = {}
@@ -128,7 +124,7 @@ user_purposes = {}
 
 # --- БАЗА ДАННЫХ ---
 def get_db_connection():
-    conn = sqlite3.connect('cars.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA foreign_keys = ON")  # Включить поддержку внешних ключей
     return conn
 
@@ -348,9 +344,9 @@ months = {
     '10': 'Октябрь', '11': 'Ноябрь', '12': 'Декабрь'
 }
 OPERATORS = {
-    'station_1': 5035760364,
+    'station_1': 6332859587,
     'station_2': 7956696604,
-    'station_3': 8411184981,
+    'station_3': 5035760364,
     'station_4': 8406093193
 }
 
@@ -470,7 +466,7 @@ def get_state(chat_id):
 
 def add_rental_history(user_id, car_id, rent_start, rent_end, price):
     try:
-        connection = sqlite3.connect('cars.db')
+        connection = sqlite3.connect(DB_PATH)
         cursor = connection.cursor()
 
         # Вставляем запись в таблицу rental_history
@@ -486,7 +482,7 @@ def add_rental_history(user_id, car_id, rent_start, rent_end, price):
 
 
 def get_rental_history(user_id):
-    conn = sqlite3.connect('cars.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT car_id, rent_start, rent_end, price FROM rental_history WHERE user_id = ?", (user_id,))
     history = cursor.fetchall()
@@ -495,7 +491,7 @@ def get_rental_history(user_id):
 
 
 def update_user_name(phone, name):
-    conn = sqlite3.connect('cars.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET name = ? WHERE phone = ?', (name, phone))
     conn.commit()
@@ -524,7 +520,7 @@ def save_session(user_id, session):
 
 
 def delete_user_from_db(phone_number):
-    conn = sqlite3.connect('cars.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM users WHERE phone = ?", (phone_number,))
     conn.commit()
@@ -532,7 +528,7 @@ def delete_user_from_db(phone_number):
 
 
 def get_all_users():
-    conn = sqlite3.connect('cars.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT phone, name, telegram_id FROM users")
     users = cursor.fetchall()  # список кортежей (phone, name)
@@ -541,7 +537,7 @@ def get_all_users():
 
 
 def get_booked_dates_and_times_repair():
-    conn = sqlite3.connect('cars.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT date, time FROM repair_bookings")
     booked_dates_and_times = cursor.fetchall()
@@ -550,7 +546,7 @@ def get_booked_dates_and_times_repair():
 
 
 def get_booked_dates_and_times():
-    conn = sqlite3.connect('cars.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT date, time FROM bookings")
     booked_dates_and_times = cursor.fetchall()
@@ -559,7 +555,7 @@ def get_booked_dates_and_times():
 
 
 def get_booked_dates_and_times():
-    conn = sqlite3.connect('cars.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT date, time FROM bookings WHERE status IN ('pending', 'confirmed', 'suggested')")
     data = c.fetchall()
@@ -568,7 +564,7 @@ def get_booked_dates_and_times():
 
 
 def get_user_name_by_id(user_id):
-    conn = sqlite3.connect('cars.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('SELECT name FROM users WHERE telegram_id = ?', (user_id,))
     result = cursor.fetchone()
@@ -578,7 +574,7 @@ def get_user_name_by_id(user_id):
 
 def update_user_telegram_id(phone, telegram_id):
     try:
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         # Проверяем, есть ли пользователь с таким телефоном
@@ -598,7 +594,7 @@ def update_user_telegram_id(phone, telegram_id):
 
 def sending_time_selection(chat_id, service, car_id, date_str):
     try:
-        with sqlite3.connect('cars.db', timeout=10) as conn:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
             c = conn.cursor()
             c.execute(
                 "SELECT time FROM repair_bookings WHERE date=? AND status='confirmed'",
@@ -629,7 +625,7 @@ def sending_time_selection(chat_id, service, car_id, date_str):
 
 def add_rental_history(user_id, car_id, rent_start, rent_end, price):
     try:
-        connection = sqlite3.connect('cars.db')
+        connection = sqlite3.connect(DB_PATH)
         cursor = connection.cursor()
 
         # Вставляем запись в таблицу rental_history
@@ -647,7 +643,7 @@ def add_rental_history(user_id, car_id, rent_start, rent_end, price):
 
 
 def get_rental_history(user_id):
-    conn = sqlite3.connect('cars.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT car_id, rent_start, rent_end, price FROM rental_history WHERE user_id = ?", (user_id,))
     history = cursor.fetchall()
@@ -656,7 +652,7 @@ def get_rental_history(user_id):
 
 
 def get_booked_dates_and_times():
-    conn = sqlite3.connect('cars.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT date, time FROM bookings")
     booked_dates_and_times = cursor.fetchall()
@@ -735,39 +731,7 @@ def send_long_message(chat_id, text, chunk_size=4000):
     for i in range(0, len(text), chunk_size):
         bot.send_message(chat_id, text[i:i + chunk_size])
 
-@bot.message_handler(commands=['bonus'])
-def add_bonus(message):
-    try:
-        # проверка прав
-        if message.from_user.id not in ADMIN_IDS and message.from_user.id != DIRECTOR_ID:
-            return bot.reply_to(message, "❌ У вас нет прав на эту команду.")
 
-        # разбор аргументов
-        args = message.text.split()
-        if len(args) != 3:
-            return bot.reply_to(message, "⚠️ Использование: /addbonus <telegram_id> <сумма>")
-
-        telegram_id = int(args[1])
-        amount = int(args[2])
-
-        with sqlite3.connect("cars.db") as conn:
-            cursor = conn.cursor()
-
-            # обновляем бонусы
-            cursor.execute(
-                "UPDATE users SET bonus = bonus + ? WHERE telegram_id = ?",
-                (amount, telegram_id)
-            )
-            conn.commit()
-
-            if cursor.rowcount == 0:
-                bot.reply_to(message, f"❌ Пользователь с telegram_id {telegram_id} не найден.")
-            else:
-                bot.reply_to(message, f"✅ Пользователю {telegram_id} добавлено {amount} бонусов.")
-
-    except Exception as e:
-        print(f"Ошибка add_bonus: {e}")
-        bot.reply_to(message, "⚠️ Ошибка при добавлении бонусов.")
 @bot.message_handler(commands=['history'])
 def show_history(message):
     try:
@@ -775,7 +739,7 @@ def show_history(message):
         if message.from_user.id not in ADMIN_IDS:
             return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute("SELECT * FROM history ORDER BY 'Дата' DESC LIMIT 100")  # например, 100 записей
@@ -804,7 +768,7 @@ def show_raw_rental_history(message):
         return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
 
     try:
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -835,73 +799,7 @@ def show_raw_rental_history(message):
         bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
     finally:
         conn.close()
-@bot.message_handler(commands=['fuel'])
-def show_raw_rental_history(message):
-    import sqlite3
-    if message.from_user.id not in ADMIN_IDS:
-        return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
 
-    try:
-        conn = sqlite3.connect('cars.db')
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT * FROM fuel ORDER BY id DESC")
-        rows = cursor.fetchall()
-
-        if not rows:
-            bot.send_message(message.chat.id, "📋 Таблица fuel пуста.")
-            return
-
-        for row in rows:
-            text = (
-                f"🧾 id: #{row['id']}\n"
-                f"👤 тип топлива: {row['fuel_type']}\n"
-                f"🚘 цена за литр: {row['price_per_litre']}\n"
-                f"📅 способ оплаты: {row['payment_method']}\n"
-                f"📅 баллы: {row['bonuses']}\n"
-            )
-
-            bot.send_message(message.chat.id, text)
-
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
-    finally:
-        conn.close()
-
-@bot.message_handler(commands=['fuel'])
-def show_raw_rental_history(message):
-    import sqlite3
-    if message.from_user.id not in ADMIN_IDS:
-        return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
-
-    try:
-        conn = sqlite3.connect('cars.db')
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT * FROM fuel ORDER BY id DESC")
-        rows = cursor.fetchall()
-
-        if not rows:
-            bot.send_message(message.chat.id, "📋 Таблица fuel пуста.")
-            return
-
-        for row in rows:
-            text = (
-                f"🧾 id: #{row['id']}\n"
-                f"👤 тип топлива: {row['fuel_type']}\n"
-                f"🚘 цена за литр: {row['price_per_litre']}\n"
-                f"📅 способ оплаты: {row['payment_method']}\n"
-                f"📅 баллы: {row['bonuses']}\n"
-            )
-
-            bot.send_message(message.chat.id, text)
-
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
-    finally:
-        conn.close()
 
 @bot.message_handler(commands=['list_users'])
 def list_users_handler(message):
@@ -909,7 +807,7 @@ def list_users_handler(message):
         if message.from_user.id not in ADMIN_IDS:
             return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
 
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute('''
             SELECT id, phone, name, full_name, birthday_date, telegram_id, 
@@ -989,7 +887,7 @@ def update_booking_status(booking_id=None, user_id=None, car_id=None, new_status
         raise ValueError("Нужно указать booking_id или комбинацию user_id и car_id")
 
     try:
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         if booking_id:
@@ -1011,7 +909,7 @@ def show_bookings(message):
         return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
 
     try:
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -1056,7 +954,7 @@ def handle_delivery_amount(message):
     try:
         amount = float(message.text.strip())
 
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         # Найдём запись, где delivery_price совпадает и доставка ещё не подтверждена
@@ -1099,7 +997,7 @@ def handle_ask_command(message):
     try:
         chat_id = message.chat.id
 
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         # Получаем последние 5 вопросов с ответами
@@ -1140,7 +1038,7 @@ def handle_ask_buttons(call):
 
         # Показываем ответ на выбранный вопрос
         question_id = int(call.data.replace("show_answer_", ""))
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT question_text, answer_text FROM questions WHERE id = ?", (question_id,))
         row = cursor.fetchone()
@@ -1242,7 +1140,7 @@ def process_admin_answer(message, question_id, user_id):
 
         answer = message.text
 
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         # Обновляем ответ
@@ -1282,7 +1180,7 @@ def set_status_command(message):
 
         new_status = args[1].strip().lower()
 
-        with sqlite3.connect('cars.db') as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
 
             # Обновляем статус
@@ -1318,7 +1216,7 @@ def set_status_command(message):
 
         new_status = args[1]
 
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET status = ? WHERE telegram_id = ?", (new_status, user_id))
         conn.commit()
@@ -1387,7 +1285,7 @@ def get_reset_booked_dates(car_id: int, user_id: int = None) -> set:
     try:
         booked_dates = None
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
 
             # 1. Получаем модель и год выбранного автомобиля
@@ -1571,7 +1469,7 @@ def handle_rent_end_date(message):
         rent_end_str = rent_end.strftime("%Y-%m-%d")
 
         # --- проверка свободной машины ---
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT brand_model, year, service, price FROM cars WHERE car_id = ?", (car_id,))
             car_info = cursor.fetchone()
@@ -1684,7 +1582,7 @@ def get_booked_dates(car_id: int) -> set:
     try:
         booked_dates = None  # будет пересечение занятых дат всех машин
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
 
             # 1. Получаем модель и год выбранного автомобиля
@@ -1782,7 +1680,7 @@ def set_user_status_new(message):
 
         telegram_id = int(parts[1])
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE users SET status = 'new' WHERE telegram_id = ?", (telegram_id,))
             conn.commit()
@@ -1801,7 +1699,7 @@ def start(message):
         print(user_id)
 
         # --- Подключение к базе ---
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -1914,7 +1812,7 @@ def start(message):
                 show_main_menu(message.chat.id)
 
             elif status == 'waiting_car':
-                conn = sqlite3.connect("cars.db")
+                conn = sqlite3.connect(DB_PATH)
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
@@ -2004,7 +1902,7 @@ def start(message):
                     markup.add(types.InlineKeyboardButton("🎁 Сменить бонусы", callback_data="admin_set_bonus"))
                     markup.add(types.InlineKeyboardButton("💸 Список вакансий", callback_data="admin_set_job"))
                     markup.add(types.InlineKeyboardButton("👤 Добавить оператора", callback_data="admin_set_operator"))
-
+                    markup.add(types.InlineKeyboardButton("📢 Сделать рассылку", callback_data="admin_set_broadcast"))
                 if user_id in ADMIN_IDS:
                     markup.add(types.InlineKeyboardButton("📋 Таблицы", callback_data="admins_tables"))
                     markup.add(types.InlineKeyboardButton("🚗 Добавить машину", callback_data="admins_add_car"))
@@ -2027,7 +1925,7 @@ def start(message):
                     markup.add(types.InlineKeyboardButton("🎁 Сменить бонусы", callback_data="admin_set_bonus"))
                     markup.add(types.InlineKeyboardButton("💸 Список вакансий", callback_data="admin_set_job"))
                     markup.add(types.InlineKeyboardButton("👤 Добавить оператора", callback_data="admin_set_operator"))
-
+                    markup.add(types.InlineKeyboardButton("📢 Сделать рассылку", callback_data="admin_set_broadcast"))
                 if user_id in ADMIN_IDS:
                     markup.add(types.InlineKeyboardButton("📋 Таблицы", callback_data="admins_tables"))
                     markup.add(types.InlineKeyboardButton("🚗 Добавить машину", callback_data="admins_add_car"))
@@ -2061,7 +1959,7 @@ def start(message):
                     rental_menu_kb.add(types.InlineKeyboardButton("🎁 Сменить бонусы", callback_data="admin_set_bonus"))
                     rental_menu_kb.add(types.InlineKeyboardButton("💸 Список вакансий", callback_data="admin_set_job"))
                     rental_menu_kb.add(types.InlineKeyboardButton("👤 Добавить оператора", callback_data="admin_set_operator"))
-
+                    rental_menu_kb.add(types.InlineKeyboardButton("📢 Сделать рассылку", callback_data="admin_set_broadcast"))
                 if user_id in ADMIN_IDS:
                     rental_menu_kb.add(types.InlineKeyboardButton("📋 Таблицы", callback_data="admins_tables"))
                     rental_menu_kb.add(types.InlineKeyboardButton("🚗 Добавить машину", callback_data="admins_add_car"))
@@ -2436,7 +2334,7 @@ def handle_admin_refund(message):
 
 def get_last_booking_id(user_id):
     try:
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
@@ -2493,7 +2391,7 @@ def handle_refund_confirm(call):
 def cancel1_booking(booking_id, user_id):
     try:
         try:
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
 
@@ -2643,7 +2541,7 @@ def handle_my_rental(call):
     try:
         user_id = call.from_user.id
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
 
@@ -2753,7 +2651,7 @@ def clear_all_users(message):
         return
 
     try:
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         # Удаляем все бронирования, связанные с пользователями
@@ -2831,24 +2729,18 @@ def handle_fuel(call):
             bot.send_message(call.message.chat.id, "Вот где ты можешь заправиться", reply_markup=markup)
 
 
-
         elif data == "bonuses":
             cursor.execute("SELECT bonus FROM users WHERE telegram_id = ?", (user_id,))
             result = cursor.fetchone()
             if result:
-                bonus = float(result[0])  # преобразуем к float
-                bonus_str = f"{bonus:.1f}"  # округляем до 1 знака после запятой
-                # падежи для слова "балл"
-                last_digit = int(bonus) % 10
-                if last_digit == 1 and int(bonus) % 100 != 11:
-                    word = "балл"
-                elif last_digit in [2, 3, 4] and not (12 <= int(bonus) % 100 <= 14):
-                    word = "балла"
-                else:
-                    word = "баллов"
-                bot.send_message(chat_id, f"У вас {bonus_str} {word}")
+                bonus = result[0]
+                count = int(bonus) % 10
+                word = "баллов" if count in [0, 5, 6, 7, 8, 9] else "балл" if count == 1 else "балла"
+                bot.send_message(chat_id, f"У вас {bonus} {word}")
             else:
                 bot.send_message(chat_id, "❌ Не удалось получить информацию о баллах.")
+
+
         elif data == "qr":
             cursor.execute("SELECT phone FROM users WHERE telegram_id = ?", (user_id,))
             result = cursor.fetchone()
@@ -2888,7 +2780,6 @@ def handle_fuel(call):
         bot.answer_callback_query(call.id)
     except Exception as e:
         print(f"Ошибка 2246: {e}")
-
 
 
 def generate_qr_code(data: str) -> BytesIO:
@@ -3055,7 +2946,7 @@ def callback_handler(call):
 
             # Проверка наличия активной смены
             try:
-                with sqlite3.connect("cars.db") as conn:
+                with sqlite3.connect(DB_PATH) as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
                         SELECT 1 
@@ -3121,7 +3012,7 @@ def callback_handler(call):
             fuel = session.get('fuel')
             price = 0
             try:
-                with sqlite3.connect("cars.db") as conn:
+                with sqlite3.connect(DB_PATH) as conn:
                     cur = conn.cursor()
                     cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? LIMIT 1", (fuel,))
                     row = cur.fetchone()
@@ -3140,7 +3031,7 @@ def callback_handler(call):
 
             # Проверяем бонусы пользователя
             try:
-                with sqlite3.connect("cars.db") as conn:
+                with sqlite3.connect(DB_PATH) as conn:
                     cur = conn.cursor()
                     cur.execute("SELECT bonus FROM users WHERE telegram_id = ?", (client_chat_id,))
                     row = cur.fetchone()
@@ -3150,14 +3041,10 @@ def callback_handler(call):
                 current_bonus = 0
 
             markup_client = InlineKeyboardMarkup()
-            if fuel == 'gaz':
-                markup_client.add(
-                    InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"),
-                    InlineKeyboardButton("💳 Карта", callback_data=f"payment_card_full_{client_chat_id}")
-                )
-            else:
-                markup_client.add(
-                    InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"))
+            markup_client.add(
+                InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"),
+                InlineKeyboardButton("💳 Карта", callback_data=f"payment_card_full_{client_chat_id}")
+            )
 
             if current_bonus >= rub:
                 markup_client.add(
@@ -3278,7 +3165,7 @@ def finalize_order(chat_id):
         fuel = data['fuel']
         price = 0
         try:
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 cur = conn.cursor()
                 # Берём первую попавшуюся цену для выбранного топлива
                 cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? AND payment_method = ? LIMIT 1", (fuel, data['payment_method']))
@@ -3364,7 +3251,7 @@ def add_bonus(user_id, litres, fuel, payment_method):
 
         bonus_to_add = 0
         try:
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 cur = conn.cursor()
 
                 # 🔹 Получаем коэффициент бонусов для конкретного топлива и метода оплаты
@@ -3489,7 +3376,7 @@ def handle_full_tank_litres_input(message):
         fuel = session.get('fuel')
         price = 0
         try:
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 cur = conn.cursor()
                 # Берём первую попавшуюся цену для выбранного топлива
                 cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? LIMIT 1", (fuel,))
@@ -3509,7 +3396,7 @@ def handle_full_tank_litres_input(message):
             "Выберите способ оплаты:"
         )
         try:
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 cur = conn.cursor()
                 cur.execute("SELECT bonus FROM users WHERE telegram_id = ?", (client_chat_id,))
                 row = cur.fetchone()
@@ -3520,14 +3407,10 @@ def handle_full_tank_litres_input(message):
 
         # Формируем кнопки
         markup_client = InlineKeyboardMarkup()
-        if fuel == 'gaz':
-            markup_client.add(
-                InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"),
-                InlineKeyboardButton("💳 Карта", callback_data=f"payment_card_full_{client_chat_id}")
-            )
-        else:
-            markup_client.add(
-                InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"))
+        markup_client.add(
+            InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"),
+            InlineKeyboardButton("💳 Карта", callback_data=f"payment_card_full_{client_chat_id}")
+        )
 
         # Если хватает баллов на всю сумму
         if current_bonus >= rub:
@@ -3565,7 +3448,7 @@ def handle_pay_bonus_full(call):
 
         price = 0
         try:
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 cur = conn.cursor()
                 # Берём первую попавшуюся цену для выбранного топлива
                 cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? LIMIT 1", (fuel,))
@@ -3580,7 +3463,7 @@ def handle_pay_bonus_full(call):
 
 
         try:
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 cur = conn.cursor()
                 cur.execute("SELECT bonus FROM users WHERE telegram_id = ?", (client_chat_id,))
                 row = cur.fetchone()
@@ -3658,7 +3541,7 @@ def handle_payment_choice(call):
 
         price = 0
         try:
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 cur = conn.cursor()
                 # Берём первую попавшуюся цену для выбранного топлива
                 cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? AND payment_method = ? LIMIT 1", (fuel, method))
@@ -3733,7 +3616,7 @@ def handle_full_tank_accepted(call):
         fuel = session.get('fuel')
         price = 0
         try:
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 cur = conn.cursor()
                 # Берём первую попавшуюся цену для выбранного топлива
                 cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? LIMIT 1", (fuel,))
@@ -3765,7 +3648,7 @@ def handle_full_tank_accepted(call):
         operator_chat_id = STATION_OPERATORS.get(station_address)
         bot.send_message(operator_chat_id, "✅ Отлично, заправка прошла успешно!")
         try:
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 conn.row_factory = sqlite3.Row
                 cur = conn.cursor()
 
@@ -3927,7 +3810,7 @@ def update_bonus(message):
 
         ensure_fuel_rows()  # проверяем и создаём все комбинации
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cur = conn.cursor()
             # обновляем бонус только для выбранной комбинации
             cur.execute(
@@ -3965,6 +3848,53 @@ def handle_admin_buttons(call):
                 print(f"Ошибка 3956: {e}")
     except Exception as e:
         print(f"[ERROR] Ошибка 3950: {e}")
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_set_broadcast")
+def start_broadcast(call):
+    try:
+        if call.message.chat.id != DIRECTOR_ID:
+            bot.send_message(call.message.chat.id, "❌ У вас нет прав для этой команды.")
+            return
+
+        bot.send_message(DIRECTOR_ID, "Введите текст рассылки:")
+        bot.register_next_step_handler(call.message, process_broadcast)
+
+    except Exception as e:
+        print(f"[ERROR] Ошибка 3864: {e}")
+
+
+# 📢 Рассылка
+def process_broadcast(message):
+    try:
+        if message.chat.id != DIRECTOR_ID:   # ✅ тут должен быть message, а не call
+            return
+
+        text = message.text
+        sent_count, fail_count = 0, 0
+
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT telegram_id FROM users WHERE telegram_id IS NOT NULL")
+            rows = cur.fetchall()
+
+        for row in rows:
+            user_id = row[0]
+            try:
+                bot.send_message(user_id, text)
+                sent_count += 1
+            except Exception as e:
+                print(f"[BROADCAST ERROR] Не удалось отправить {user_id}: {e}")
+                fail_count += 1
+
+        bot.send_message(
+            DIRECTOR_ID,
+            f"✅ Рассылка завершена!\nОтправлено: {sent_count}\nОшибок: {fail_count}"
+        )
+
+    except Exception as e:
+        print(f"[ERROR] Ошибка 3892: {e}")
+
 @bot.callback_query_handler(func=lambda call: call.data in ["admin_set_job"])
 def admin_manage_jobs(call):
     try:
@@ -3972,7 +3902,7 @@ def admin_manage_jobs(call):
             bot.answer_callback_query(call.id, "❌ Нет доступа")
             return
 
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM jobs")
@@ -4036,7 +3966,7 @@ def ensure_fuel_rows():
     fuels = ['benzin', 'gaz']
     payments = ['cash', 'card']
     try:
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cur = conn.cursor()
             for fuel in fuels:
                 for pay in payments:
@@ -4065,7 +3995,7 @@ def update_price(message):
 
         ensure_fuel_rows()  # проверяем и создаём все комбинации
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cur = conn.cursor()
             # обновляем цену для всех способов оплаты этого топлива
             cur.execute("UPDATE fuel SET price_per_litre = ? WHERE fuel_type = ?", (new_price, fuel))
@@ -4235,7 +4165,7 @@ def handle_jobs(call):
         # )
 
         # динамические вакансии из БД
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT id, profession, title FROM jobs")
@@ -4615,7 +4545,7 @@ def handle_job_description(call):
         bot.answer_callback_query(call.id)
         profession_key = call.data[4:]  # убираем "job_"
 
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT title, description FROM jobs WHERE profession = ?", (profession_key,))
@@ -4671,7 +4601,7 @@ def yes_or_no(call):
                 bot.send_message(chat_id, "⚠ Не найдены данные о доставке. Повторите ввод.")
                 return
 
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 cursor = conn.cursor()
 
                 # Получаем user_id из БД (твой уникальный id)
@@ -4858,7 +4788,7 @@ def send_date_buttons(chat_id):
 
 def check_photo_in_db(user_id, photo_column):
     try:
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute(f"SELECT {photo_column} FROM users WHERE telegram_id = ?", (user_id,))
             row = cursor.fetchone()
@@ -4895,7 +4825,7 @@ def handle_repair_photo(message):
 
         # Достаем из базы имя и телефон
         try:
-            conn = sqlite3.connect("cars.db")
+            conn = sqlite3.connect(DB_PATH)
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute("SELECT name, phone FROM users WHERE telegram_id = ?", (user_id,))
@@ -5000,7 +4930,7 @@ def handle_photo_upload(message):
             set_state(user_id, None)
             bot.send_message(chat_id, "✅ Все документы получены.")
 
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     UPDATE users SET
@@ -5020,7 +4950,7 @@ def handle_photo_upload(message):
 
         elif state == "admin_add_car_photo":
             session["photo"] = photo_id
-            with db_lock, sqlite3.connect("cars.db") as conn:
+            with db_lock, sqlite3.connect(DB_PATH) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     INSERT INTO cars (number, brand_model, year, transmission, photo_url, service, station)
@@ -5052,7 +4982,7 @@ def handle_photo_upload(message):
             file_id = photo_id
             booking_id = inspection_states.get(user_id, {}).get("booking_id", "❓")
 
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 cur = conn.cursor()
                 cur.execute("SELECT name, phone, passport_front_photo FROM users WHERE telegram_id = ?", (user_id,))
                 row = cur.fetchone()
@@ -5086,7 +5016,7 @@ def handle_photo_upload(message):
             session["state"] = None
             issue_text = session.get("inspection_issue_text", "— описание отсутствует —")
 
-            with db_lock, sqlite3.connect("cars.db") as conn:
+            with db_lock, sqlite3.connect(DB_PATH) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT bookings.car_id, cars.brand_model, cars.number,
@@ -5131,7 +5061,7 @@ def post_photo_processing(user_id, chat_id, session):
         service = session.get("selected_service")
         car_id = session.get("car_id")
         print(car_id)
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id, full_name, phone FROM users WHERE telegram_id = ?", (user_id,))
             user_row = cursor.fetchone()
@@ -5148,7 +5078,7 @@ def post_photo_processing(user_id, chat_id, session):
 
         elif service in ["rent", "rental"]:
 
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
 
                 cursor = conn.cursor()
 
@@ -5379,7 +5309,7 @@ def process_carapprove(call):
                     service=service)
 
         # Проверяем, есть ли ФИО в БД
-        with db_lock, sqlite3.connect("cars.db") as conn:
+        with db_lock, sqlite3.connect(DB_PATH) as conn:
             cur = conn.cursor()
             cur.execute("SELECT full_name FROM users WHERE id=?", (client_telegram_id,))
             full_name_row = cur.fetchone()
@@ -5415,7 +5345,7 @@ def handle_admin_fullname_input(message):
 
         print(f"🔍 Обновляем ФИО: {full_name} для telegram_id={client_telegram_id!r}")
 
-        with db_lock, sqlite3.connect("cars.db") as conn:
+        with db_lock, sqlite3.connect(DB_PATH) as conn:
             cur = conn.cursor()
             # Проверим, есть ли такой пользователь
             cur.execute("SELECT 1 FROM users WHERE id=?", (client_telegram_id,))
@@ -5452,7 +5382,7 @@ def handle_contract_file(message):
         file_id = message.document.file_id
 
         try:
-            with db_lock, sqlite3.connect("cars.db") as conn:
+            with db_lock, sqlite3.connect(DB_PATH) as conn:
                 cur = conn.cursor()
                 cur.execute("""
                         SELECT id FROM bookings
@@ -5487,7 +5417,7 @@ def handle_contract_file(message):
 def continue_carapprove_flow(service, car_id, telegram_id, admin_id):
     try:
         print(telegram_id)
-        with db_lock, sqlite3.connect("cars.db") as conn:
+        with db_lock, sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
 
@@ -5561,7 +5491,7 @@ def continue_carapprove_flow(service, car_id, telegram_id, admin_id):
 # --------------------- 5. ОТПРАВКА ДОГОВОРА ОПЕРАТОРУ ---------------------
 def send_contract_to_operator(operator_id, telegram_id):
     try:
-        with db_lock, sqlite3.connect("cars.db") as conn:
+        with db_lock, sqlite3.connect(DB_PATH) as conn:
             cur = conn.cursor()
             cur.execute("""
                 SELECT contract_file_id
@@ -5592,7 +5522,7 @@ def handle_waiting_car_actions(message):
         text = message.text
 
         # Проверка статуса пользователя
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
         cur.execute("SELECT status FROM users WHERE telegram_id = ?", (user_id,))
@@ -6204,7 +6134,7 @@ def handle_deposit_paid(call):
 
         full_name = "Неизвестно"
         try:
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 conn.row_factory = sqlite3.Row
                 cur = conn.cursor()
                 cur.execute("SELECT full_name, phone FROM users WHERE telegram_id = ?", (user_id,))
@@ -6890,7 +6820,7 @@ def handle_doc_verification(call):
         booking_id = int(parts[-2])
         user_id = int(parts[-1])
 
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -6986,7 +6916,7 @@ def set_deposit_status(message):
             bot.reply_to(message, "❗ Статус должен быть 'paid' или 'unpaid'.")
             return
 
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         cursor.execute("UPDATE bookings SET deposit_status = ? WHERE id = ?", (status, booking_id))
@@ -7029,7 +6959,7 @@ def handle_date_selection(message):
         _, service, car_id = parts
 
         # Получаем уже забронированные слоты
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
                 SELECT time FROM bookings
@@ -7091,7 +7021,7 @@ def handle_time_selection(call):
         bot.edit_message_reply_markup(chat_id=call.message.chat.id,
                                       message_id=call.message.message_id,
                                       reply_markup=None)
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -7161,7 +7091,7 @@ def handle_time_selection(call):
         # Если service не один из стандартных — ищем в таблице jobs
         if service_display is None:
             profession_key = service  # service содержит profession_key
-            conn = sqlite3.connect("cars.db")
+            conn = sqlite3.connect(DB_PATH)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("SELECT title FROM jobs WHERE profession = ?", (profession_key,))
@@ -7236,8 +7166,10 @@ def handle_time_selection(call):
 
         message_text += delivery_info
 
-        # Отправляем админу
-        bot.send_message(ADMIN_ID2, message_text, reply_markup=markup)
+        if service == "return":
+            bot.send_message(ADMIN_ID2, message_text, reply_markup=markup)
+        else:
+            bot.send_message(DIRECTOR_ID, message_text, reply_markup=markup)
         bot.send_message(user_telegram_id, f"✅Отлично!\nМы Уже отправили заявку админу. Это может занять некоторое время")
 
     except Exception as e:
@@ -7291,7 +7223,7 @@ def address_callback_handler(call):
         user_telegram_id = int(parts[3])
         date_str = parts[4]
         time_str = parts[5]
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         update_query = '''
@@ -7333,7 +7265,7 @@ def handle_remind(call):
 
         # Можно выполнить действия с базой или логикой:
         # Например, отметить заявку как "отговорена" или удалить её
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         # Пример: удалим заявку у админа (если есть связь в БД)
 
@@ -7447,7 +7379,7 @@ def process_approve(call):
                 reply_markup=markup
             )
         else:
-            OFFICE_ADDRESS = "г. Тольятти, ул. Борковская, д. 59"
+            OFFICE_ADDRESS = "г. Тольятти, ул. Южное шоссе, 35А"
             bot.send_message(
                 telegram_id,
                 f"✅ Ваша заявка на {service_display} одобрена!\n\n"
@@ -7628,7 +7560,7 @@ def handle_suggest_date_choice(message):
 
 def show_time_selection(message, car_id, user_id, date_str):
     try:
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("SELECT time FROM bookings WHERE car_id=? AND date=? AND status='confirmed'", (car_id, date_str))
         booked_times = [row[0] for row in c.fetchall()]
@@ -7669,7 +7601,7 @@ def process_admin_time_selection(call):
         time_str = parts[3]
         bot.answer_callback_query(call.id, text=f"Вы выбрали {date_str} {time_str}")
 
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
 
         # Проверка на занятость времени
@@ -8103,7 +8035,7 @@ def delete_user_handler(message):
 
 def delete_user_from_db(phone_number):
     try:
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM users WHERE phone = ?", (phone_number,))
         conn.commit()
@@ -8194,7 +8126,7 @@ def delete_car_handler(call):
         car_id = int(call.data.split("_")[1])
 
         # Удаляем машину из БД
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM cars WHERE car_id = ?", (car_id,))
         conn.commit()
@@ -8228,7 +8160,7 @@ def toggle_car_broken_status(call):
             bot.register_next_step_handler(msg, save_broken_status_with_date, car_id)
         else:
             # Исправна — просто сбрасываем
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 cursor = conn.cursor()
                 cursor.execute("UPDATE cars SET is_broken = 0 AND is_available = 0, fix_date = NULL WHERE car_id = ?",
                                (car_id,))
@@ -8250,7 +8182,7 @@ def save_broken_status_with_date(message, car_id):
             bot.register_next_step_handler(msg, save_broken_status_with_date, car_id)
             return
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("""
                     UPDATE cars SET is_broken = 1, fix_date = ? WHERE car_id = ?
@@ -8287,7 +8219,7 @@ def save_fix_date(message, car_id):
             bot.register_next_step_handler(msg, save_fix_date, car_id)
             return
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE cars SET fix_date = ? AND is_available = 0 WHERE car_id = ?",
                            (parsed_date.strftime("%Y-%m-%d"), car_id))
@@ -8324,7 +8256,7 @@ def handle_station_set(call):
     try:
         _, car_id, new_station = call.data.split("_", 2)
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE cars SET station = ? WHERE car_id = ?", (new_station, car_id))
             conn.commit()
@@ -8705,7 +8637,7 @@ def admin_add_car_photo(message):
         photo_id = message.photo[-1].file_id
         session["photo"] = photo_id
         # Сохраняем в БД
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute('''
                 INSERT INTO cars (number, brand_model, year, transmission, photo_url, service, station)
@@ -9046,7 +8978,7 @@ def handle_inline(call):
                 return
             # Получаем марку и год, затем станции
 
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
 
                 cursor = conn.cursor()
 
@@ -9116,7 +9048,7 @@ def handle_station_choice(call):
 
             selected_car_id = free_car_ids[station]
             print(selected_car_id)
-            with sqlite3.connect("cars.db") as conn:
+            with sqlite3.connect(DB_PATH) as conn:
                 cursor = conn.cursor()
                 print(selected_car_id)
                 start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -9141,7 +9073,7 @@ def handle_station_choice(call):
         bot.send_message(chat_id, f"✅ Вы выбрали станцию: {station}")
 
         # Тут проверка документов
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("""
                     SELECT driver_license_photo, passport_front_photo, passport_back_photo
@@ -9455,7 +9387,7 @@ def handle_pickup_station(call):
             bot.send_message(chat_id, "❌ Не выбраны даты аренды.")
             return
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -9519,7 +9451,7 @@ def create_time_markup_calendar(date_str, car_id):
     import sqlite3
     try:
         markup = types.InlineKeyboardMarkup(row_width=3)
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         cursor.execute("SELECT time FROM bookings WHERE date = ? AND car_id = ?", (date_str, car_id))
@@ -9772,7 +9704,7 @@ def clear_cars(message):
         return
 
     try:
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM cars")
         conn.commit()
@@ -10197,7 +10129,7 @@ def view_questions(message):
             bot.send_message(message.chat.id, "У вас нет доступа к этой команде.")
             return
 
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT id, username, question_text, answer_text, answered FROM questions")
         questions = cursor.fetchall()
@@ -10225,7 +10157,7 @@ def delete_question(message):
             bot.send_message(message.chat.id, "У вас нет доступа к этой команде.")
             return
 
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT id, username, question_text, answer_text, answered FROM questions")
         questions = cursor.fetchall()
@@ -10253,7 +10185,7 @@ def handle_delete_question(call):
             return
 
         question_id = int(call.data.split("_")[1])
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM questions WHERE id = ?", (question_id,))
         conn.commit()
@@ -10273,7 +10205,7 @@ def delete_questions(message):
             bot.send_message(message.chat.id, "У вас нет доступа к этой команде.")
             return
 
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         # Удаляем таблицу
@@ -10313,7 +10245,7 @@ def handle_reset_bookings(message):
 
 def reset_bookings_table():
     try:
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         # Удаляем таблицу, если она существует
@@ -10371,7 +10303,7 @@ def list_users_handler(message):
             bot.reply_to(message, "❌ У вас нет доступа к этой команде.")
             return
 
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT phone, name, telegram_id, status FROM users")
         users = cursor.fetchall()
@@ -10407,7 +10339,7 @@ def view_bookings(message):
             bot.send_message(user_id, "⛔ У вас нет доступа к этой команде.")
             return
 
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         cursor.execute('''
@@ -10513,7 +10445,7 @@ def send_late_pickup_notifications():
         today_str = today.strftime("%Y-%m-%d")
         print("[send_pickup_notifications] Запуск1")
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -10583,7 +10515,7 @@ def send_pickup_notifications():
         yesterday = today - timedelta(days=1)
         print("[send_pickup_notifications] Запуск")
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -10684,7 +10616,7 @@ def force_start_rental():
     try:
         today_str = date.today().strftime("%Y-%m-%d")
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             print(1)
@@ -10793,7 +10725,7 @@ def extend_daily_select_days(message):
 
         set_state2(user_id, "extend_daily")  # сохраняем состояние
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -10860,7 +10792,7 @@ def confirm_daily_extension(message):
             bot.send_message(chat_id, "❌ Неверный формат.")
             return
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -10957,7 +10889,7 @@ def extend_by_hour(message):
 
 def get_allowed_extension_hours(user_id):
     try:
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
@@ -11036,7 +10968,7 @@ def confirm_hour_extension(message):
             bot.send_message(chat_id, "❌ Укажите число от 1 до 12.")
             return
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -11124,7 +11056,7 @@ def handle_payment_callback(call):
 
 def finalize_hourly_extension(rental_id: int, new_end_datetime: datetime, total_price: float, chat_id: int):
     try:
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             # Обновляем дату и время окончания аренды (сохраняем как строку с временем)
             cursor.execute("UPDATE rental_history SET end_time = ? WHERE id = ?",
@@ -11167,7 +11099,7 @@ def check_rental_return_times():
     try:
         now = datetime.now()
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -11229,7 +11161,7 @@ def check_upcoming_bookings():
         }
 
         try:
-            with sqlite3.connect("cars.db", timeout=10) as conn:
+            with sqlite3.connect(DB_PATH, timeout=10) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                         SELECT b.id, u.name, u.telegram_id, c.brand_model, b.date, b.time, b.service
@@ -11268,7 +11200,7 @@ def check_upcoming_bookings():
                     )
                     try:
                         bot.send_message(ADMIN_ID2, message, parse_mode="HTML", reply_markup=markup)
-                        with sqlite3.connect("cars.db", timeout=10) as conn:
+                        with sqlite3.connect(DB_PATH, timeout=10) as conn:
                             conn.execute("UPDATE bookings SET notified = 1 WHERE id = ?", (booking_id,))
                             conn.commit()
                     except Exception as e:
@@ -11304,7 +11236,7 @@ def send_meeting_notification(booking_id, name, user_id, car_model, date_str, ti
 
         bot.send_message(ADMIN_ID2, message, parse_mode="HTML", reply_markup=markup)
 
-        with sqlite3.connect("cars.db", timeout=10) as conn:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
             conn.execute("UPDATE bookings SET notified = 1 WHERE id = ?", (booking_id,))
             conn.commit()
 
@@ -11319,7 +11251,7 @@ from datetime import datetime, timedelta, timezone
 def cancel_expired_bookings():
     try:
         with db_lock:
-            conn = sqlite3.connect("cars.db")
+            conn = sqlite3.connect(DB_PATH)
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
 
@@ -11413,7 +11345,7 @@ def cancel_booking(cur, booking_id, user_id):
 
 def check_broken_cars_and_notify():
     try:
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             print("[check_broken_cars_and_notify] Запуск")
@@ -11596,7 +11528,7 @@ def handle_choose_alt_booking(call):
         booking_id = int(booking_id)
         car_id = int(car_id)
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -11634,7 +11566,7 @@ def handle_choose_alt_rental(call):
         user_id = int(user_id)
         car_id = int(car_id)
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -11679,7 +11611,7 @@ def handle_car_returned(call):
 
     try:
         with db_lock:
-            with sqlite3.connect("cars.db", timeout=10) as conn:
+            with sqlite3.connect(DB_PATH, timeout=10) as conn:
                 cursor = conn.cursor()
 
                 # Получаем аренду
@@ -11809,7 +11741,7 @@ def handle_feedback(call):
         feedback_text, score = feedback_map.get(feedback_type, ("Спасибо за отзыв!", 2))
         print(f"Вставка в feedback: user_id={user_id}, score={score}")
         # Сохраняем в БД
-        conn = sqlite3.connect('cars.db', timeout=10)
+        conn = sqlite3.connect(DB_PATH, timeout=10)
         cursor = conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")  # включаем WAL
 
@@ -11845,7 +11777,7 @@ def start_use_handler(callback_query):
     try:
         user_id = callback_query.from_user.id
 
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -11933,7 +11865,7 @@ def show_rental_history(message):
     chat_id = message.chat.id
 
     try:
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -11992,7 +11924,7 @@ def feedback_stats(message):
         if message.from_user.id != ADMIN_ID2:
             return bot.send_message(message.chat.id, "⛔ У вас нет доступа к этой команде.")
 
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*), AVG(score) FROM feedback')
         total, avg = cursor.fetchone()
@@ -12011,7 +11943,7 @@ def feedback_stats(message):
 @bot.message_handler(commands=['users'])
 def handle_users_command(message):
     try:
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -12117,7 +12049,8 @@ def show_main_menu(chat_id, edit_message_id=None):
                 types.InlineKeyboardButton("💰 Сменить цену топлива", callback_data="admin_set_price"),
                 types.InlineKeyboardButton("🎁 Сменить бонусы", callback_data="admin_set_bonus"),
                 types.InlineKeyboardButton("💸 Список вакансий", callback_data="admin_set_job"),
-                types.InlineKeyboardButton("👤 Добавить оператора", callback_data="admin_set_operator")
+                types.InlineKeyboardButton("👤 Добавить оператора", callback_data="admin_set_operator"),
+                types.InlineKeyboardButton("📢 Сделать рассылку", callback_data="admin_set_broadcast")
             )
         # 🔑 Если админ — добавляем свои кнопки
         if user_id in ADMIN_IDS:
@@ -12543,7 +12476,7 @@ def clear_rental_history(message):
         return
 
     try:
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         cursor.execute("DELETE FROM rental_history")
@@ -12621,7 +12554,7 @@ def handle_video(message):
         user_id = message.from_user.id
 
         # Подключение к базе данных
-        conn = sqlite3.connect('cars.db')  # Укажи правильный путь к БД
+        conn = sqlite3.connect(DB_PATH)  # Укажи правильный путь к БД
         cursor = conn.cursor()
 
         # Поиск имени и телефона по telegram_id
@@ -12772,7 +12705,7 @@ def send_time_selection(chat_id, service, car_id, date_str):
 
 def get_booked_times(date_str):
     try:
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("""
                 SELECT time FROM bookings
@@ -12787,7 +12720,7 @@ def get_booked_times(date_str):
 
 def get_repair_booked_dates_and_times():
     try:
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT date, time FROM repair_bookings")
         booked_dates_and_times = cursor.fetchall()
@@ -12808,7 +12741,7 @@ def get_connection():
 def execute_query(query, params=(), fetchone=False, commit=False):
     try:
         with db_lock:
-            with sqlite3.connect('cars.db', timeout=10) as conn:
+            with sqlite3.connect(DB_PATH, timeout=10) as conn:
                 c = conn.cursor()
                 c.execute(query, params)
                 if commit:
@@ -12875,7 +12808,7 @@ def handle_issue_choice(call):
         issue_key = call.data
 
         # Достаем телефон пользователя
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT phone FROM users WHERE telegram_id = ?", (user_id,))
         phone_row = cursor.fetchone()
@@ -12938,7 +12871,7 @@ def handle_custom_issue(message):
         bot.send_message(chat_id, "✅ Спасибо! Мы зафиксировали вашу проблему.")
 
         # достаём телефон
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT phone FROM users WHERE telegram_id = ?", (user_id,))
         phone_row = cursor.fetchone()
@@ -13381,7 +13314,7 @@ def handle_repair_suggest_date_choice(message):
         print(f"Ошибка 12382: {e}")
 def show_repair_admin_suggest_calendar(message, car_id, user_id, date_str):
     try:
-        conn = sqlite3.connect('cars.db')
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("SELECT time FROM repair_bookings WHERE car_id=? AND date=? AND status='confirmed'", (car_id, date_str))
         booked_times = [row[0] for row in c.fetchall()]
@@ -13485,7 +13418,7 @@ def handle_repair_suggest_date_choice(message):
 
 def show_repair_time_selection(message, car_id, user_id, date_str):
     try:
-        with sqlite3.connect('cars.db', timeout=10) as conn:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
             c = conn.cursor()
             c.execute("""
                 SELECT time FROM repair_bookings 
@@ -13535,7 +13468,7 @@ def process_repair_time_selection(call):
         bot.answer_callback_query(call.id, text=f"Вы выбрали {date_str} {time_str}")
 
         with db_lock:
-            with sqlite3.connect('cars.db', timeout=10) as conn:
+            with sqlite3.connect(DB_PATH, timeout=10) as conn:
                 c = conn.cursor()
                 c.execute("SELECT telegram_id FROM users WHERE id = ?", (telegram_id,))
                 result = c.fetchone()
@@ -13832,7 +13765,7 @@ def handle_carwash_time(message):
 # ==== Функция добавления записи ====
 def add_booking_wash(user_id, date, time, name):
     try:
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('''
                 INSERT INTO bookings_wash (user_id, name, date, time, status)
@@ -13920,7 +13853,7 @@ def create_time_markup(selected_date: str):
 # ==== Проверка занятых слотов ====
 def get_booked_dates_and_times_wash():
     try:
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("SELECT date, time FROM bookings_wash WHERE status = 'confirmed'")
         booked = c.fetchall()
@@ -13952,7 +13885,7 @@ def send_booking_reminder():
 def check_upcoming_washing():
     now = datetime.now()
     try:
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -14034,7 +13967,7 @@ def rental_history(message):
     telegram_id = message.from_user.id
 
     try:
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             c = conn.cursor()
 
             # Получаем user_id
@@ -14153,7 +14086,7 @@ def handle_admin_questions(call):
     try:
         bot.answer_callback_query(call.id)
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -14189,14 +14122,14 @@ def handle_admin_gas(call):
     try:
         bot.answer_callback_query(call.id)
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
             cursor.execute("""
-                SELECT * FROM history
-                ORDER BY Дата DESC
-            """)
+                    SELECT * FROM history
+                    ORDER BY Дата DESC
+                """)
             records = cursor.fetchall()
 
             if not records:
@@ -14207,10 +14140,6 @@ def handle_admin_gas(call):
                 # перевод станции в адрес
                 address = STATION_NAMES.get(record['Адрес'], record['Адрес'])
 
-                cursor.execute("SELECT phone FROM users WHERE telegram_id = ?", (record["Telegram_ID"],))
-                phone_row = cursor.fetchone()
-                phone = phone_row["phone"] if phone_row else "—"
-
                 text = (
                     f"⛽ <b>Заправка №{record['№']}</b>\n"
                     f"📅 Дата: {record['Дата']}\n"
@@ -14219,19 +14148,26 @@ def handle_admin_gas(call):
                     f"💵 Рубли: {record['Рубли']}\n"
                     f"🧪 Литры: {record['Литры']}\n"
                     f"💳 Оплата: {record['Оплата']}\n"
-                    f"👤 Телефон: {phone}"
+                    f"👤 Telegram ID: {record['Telegram_ID']}"
                 )
                 bot.send_message(call.message.chat.id, text, parse_mode="HTML")
 
     except Exception as e:
         print(f"Ошибка 13220: {e}")
 
+STATUS_MAP = {
+    "pending": "В ожидании",
+    "confirmed": "Подтверждена",
+    "process": "В процессе"
+}
+
+
 @bot.callback_query_handler(func=lambda call: call.data == "admin_wash")
 def handle_admin_wash(call):
     try:
         bot.answer_callback_query(call.id)
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -14265,7 +14201,7 @@ def handle_admin_shifts(call):
     try:
         bot.answer_callback_query(call.id)
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -14313,7 +14249,7 @@ def handle_admin_operators(call):
     try:
         bot.answer_callback_query(call.id)
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -14359,7 +14295,7 @@ def handle_delete_operator(call):
     try:
         operator_id = int(call.data.split("_")[-1])
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM operators WHERE id = ?", (operator_id,))
             conn.commit()
@@ -14384,7 +14320,7 @@ def handle_admin_users(call):
     try:
         bot.answer_callback_query(call.id)
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM users ORDER BY id DESC")
@@ -14439,7 +14375,7 @@ def handle_user_docs(call):
     try:
         user_id = int(call.data.split("_")[2])
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
@@ -14507,7 +14443,7 @@ def handle_admin_bookings(call):
     try:
         bot.answer_callback_query(call.id)
 
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -14869,7 +14805,7 @@ def end_shift(message, op_id):
     import sqlite3
     from datetime import datetime
     try:
-        with sqlite3.connect("cars.db") as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -14961,7 +14897,7 @@ def delete_job(call):
 
         job_id = int(call.data.split("_")[-1])
 
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
         conn.commit()
@@ -15005,7 +14941,7 @@ def add_job_description(message):
         data = user_sessions[message.from_user.id]
         title, profession, description = data["title"], data["profession"], message.text
 
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("INSERT INTO jobs (title, profession, description) VALUES (?, ?, ?)",
                        (title, profession, description))
@@ -15023,7 +14959,7 @@ def clear_all_tables(message):
         if message.from_user.id != DAN_TELEGRAM_ID:
             return bot.send_message(message.chat.id, "⛔ У вас нет доступа к этой команде.")
 
-        conn = sqlite3.connect("cars.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         tables = [
