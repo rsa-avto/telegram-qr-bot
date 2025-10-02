@@ -49,7 +49,7 @@ import os
 
 #6332859587
 # --- НАСТРОЙКИ ---
-API_TOKEN = os.environ.get("BOT_TOKEN")
+API_TOKEN = '6419852337:AAHQGZagCRReSMWwCEFdX5BVEn7IZHEbxVk'
 
 bot = telebot.TeleBot(API_TOKEN)
 ADMIN_ID = [6040726738, 5035760364 ]  # <-- ЗАМЕНИ на свой Telegram ID
@@ -356,7 +356,7 @@ months = {
     '10': 'Октябрь', '11': 'Ноябрь', '12': 'Декабрь'
 }
 OPERATORS = {
-    'station_1': 8340223502,
+    'station_1': 6332859587,
     'station_2': 7956696604,
     'station_3': 8411184981,
     'station_4': 8406093193
@@ -772,6 +772,44 @@ def show_history(message):
         send_long_message(message.chat.id, text)
     except Exception as e:
         print(f"Ошибка 750: {e}")
+
+def add_bonus1(telegram_id: int, amount: int):
+    conn = sqlite3.connect("cars.db")
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE users SET bonus = bonus + ? WHERE telegram_id = ?",
+        (amount, telegram_id)
+    )
+    conn.commit()
+    conn.close()
+
+# --- команда для добавления бонусов ---
+@bot.message_handler(commands=['bonus'])
+def handle_bonus(message):
+    # проверяем, что команду вызвал админ
+    if message.from_user.id not in ADMIN_IDS:
+        bot.reply_to(message, "⛔ У тебя нет прав для этой команды")
+        return
+
+    try:
+        parts = message.text.split()
+        if len(parts) != 3:
+            bot.reply_to(message, "Использование: /bonus <telegram_id> <сумма>")
+            return
+
+        target_id = int(parts[1])
+        amount = int(parts[2])
+
+        add_bonus1(target_id, amount)
+
+        bot.reply_to(message, f"✅ Пользователю {target_id} начислено {amount} бонусов")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Ошибка: {e}")
+
+
+
+
 
 @bot.message_handler(commands=['raw_rental_history'])
 def show_raw_rental_history(message):
@@ -14139,9 +14177,20 @@ def handle_admin_gas(call):
             cursor = conn.cursor()
 
             cursor.execute("""
-                    SELECT * FROM history
-                    ORDER BY Дата DESC
-                """)
+                SELECT 
+                    h."№",
+                    h."Дата",
+                    h."Адрес",
+                    h."Топливо",
+                    h."Рубли",
+                    h."Литры",
+                    h."Оплата",
+                    u.phone
+                FROM history h
+                LEFT JOIN users u ON h."Telegram_ID" = u.telegram_id
+                WHERE DATE(h."Дата") = DATE('now', 'localtime')
+                ORDER BY h."Дата" DESC
+            """)
             records = cursor.fetchall()
 
             if not records:
@@ -14160,19 +14209,12 @@ def handle_admin_gas(call):
                     f"💵 Рубли: {record['Рубли']}\n"
                     f"🧪 Литры: {record['Литры']}\n"
                     f"💳 Оплата: {record['Оплата']}\n"
-                    f"👤 Telegram ID: {record['Telegram_ID']}"
+                    f"📱 Телефон: {record['phone'] or 'не указан'}"
                 )
                 bot.send_message(call.message.chat.id, text, parse_mode="HTML")
 
     except Exception as e:
         print(f"Ошибка 13220: {e}")
-
-STATUS_MAP = {
-    "pending": "В ожидании",
-    "confirmed": "Подтверждена",
-    "process": "В процессе"
-}
-
 
 @bot.callback_query_handler(func=lambda call: call.data == "admin_wash")
 def handle_admin_wash(call):
@@ -14367,21 +14409,66 @@ def handle_admin_users(call):
                     f"⭐ Бонусы: {user['bonus'] or 0}"
                 )
 
-                # Кнопка "Документы"
                 kb = types.InlineKeyboardMarkup()
                 kb.add(
                     types.InlineKeyboardButton(
                         text="📎 Документы",
                         callback_data=f"user_docs_{user['id']}"
+                    ),
+                    types.InlineKeyboardButton(
+                        text="⛽ Заправки",
+                        callback_data=f"user_gas_{user['telegram_id']}"
                     )
                 )
 
                 bot.send_message(call.message.chat.id, text, parse_mode="HTML", reply_markup=kb)
-
     except Exception as e:
         print(f"Ошибка 13405: {e}")
 
 # --- Обработчик кнопки "Документы" ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith("user_gas_"))
+def handle_user_gas(call):
+    try:
+        bot.answer_callback_query(call.id)
+        telegram_id = call.data.replace("user_gas_", "")
+
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    h."№",
+                    h."Дата",
+                    h."Адрес",
+                    h."Топливо",
+                    h."Рубли",
+                    h."Литры",
+                    h."Оплата"
+                FROM history h
+                WHERE h."Telegram_ID" = ?
+                ORDER BY h."Дата" DESC
+            """, (telegram_id,))
+            records = cursor.fetchall()
+
+            if not records:
+                bot.send_message(call.message.chat.id, "⛽ У этого пользователя заправок нет.")
+                return
+
+            for record in records:
+                address = STATION_NAMES.get(record['Адрес'], record['Адрес'])
+                text = (
+                    f"⛽ <b>Заправка №{record['№']}</b>\n"
+                    f"📅 Дата: {record['Дата']}\n"
+                    f"🏢 Адрес: {address}\n"
+                    f"⛽ Топливо: {record['Топливо']}\n"
+                    f"💵 Рубли: {record['Рубли']}\n"
+                    f"🧪 Литры: {record['Литры']}\n"
+                    f"💳 Оплата: {record['Оплата']}"
+                )
+                bot.send_message(call.message.chat.id, text, parse_mode="HTML")
+
+    except Exception as e:
+        print(f"Ошибка handle_user_gas: {e}")
 @bot.callback_query_handler(func=lambda call: call.data.startswith("user_docs_"))
 def handle_user_docs(call):
     try:
@@ -14585,11 +14672,39 @@ def add_operator_step2(message):
 
 
 # Новый шаг — ввод телефона
+def normalize_phone(phone: str) -> str | None:
+    # Оставляем только цифры
+    digits = "".join(filter(str.isdigit, phone))
+
+    if not digits:
+        return None
+
+    # Если начинается с 8 → заменяем на +7
+    if digits.startswith("8") and len(digits) == 11:
+        return "+7" + digits[1:]
+
+    # Если уже начинается с 7 и длина 11 → ставим +
+    if digits.startswith("7") and len(digits) == 11:
+        return "+" + digits
+
+    # Если уже в формате +7 (12 символов с плюсом)
+    if phone.startswith("+7") and len(digits) == 11:
+        return "+7" + digits[1:]
+
+    # Если не подходит под форматы РФ → возвращаем None
+    return None
+
+
 def add_operator_step_phone(message):
     try:
-        phone = message.text.strip()
+        phone_raw = message.text.strip()
+        phone = normalize_phone(phone_raw)
+
         if not phone:
-            return bot.send_message(message.chat.id, "Номер телефона не может быть пустым. Попробуйте снова.")
+            return bot.send_message(
+                message.chat.id,
+                "⚠️ Введите корректный номер телефона в формате 8XXXXXXXXXX или +7XXXXXXXXXX."
+            )
 
         bot.user_data[message.chat.id]["phone"] = phone
 
@@ -14597,11 +14712,12 @@ def add_operator_step_phone(message):
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
         for address in STATION_CODES_TO_ADDRESSES.values():
             markup.add(address)
-        bot.send_message(message.chat.id, "Выберите станцию:", reply_markup=markup)
+
+        bot.send_message(message.chat.id, f"Телефон сохранён: {phone}\n\nВыберите станцию:", reply_markup=markup)
         bot.register_next_step_handler(message, add_operator_step3)
+
     except Exception as e:
         print(f"Ошибка 13616: {e}")
-
 
 # Шаг 3 — выбор станции и сохранение в БД
 def add_operator_step3(message):
