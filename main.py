@@ -8100,7 +8100,7 @@ def admin_view_all_cars(call):
         user_id = call.from_user.id
         chat_id = call.message.chat.id
 
-        if user_id not in ADMIN_ID:
+        if user_id not in ADMIN_IDS:
             bot.send_message(chat_id, "❌ У вас нет доступа к этой команде.")
             return
 
@@ -8223,24 +8223,36 @@ def toggle_car_broken_status(call):
 
 def save_broken_status_with_date(message, car_id):
     try:
-        date_text = message.text.strip()
+        date_text = message.text.strip().lower()
+
+        # ✅ Возможность выйти из шага
+        if date_text in ["отмена", "выход", "стоп"]:
+            bot.send_message(message.chat.id, "❌ Действие отменено. Вы вышли из режима ввода даты.")
+            return
+
         try:
             parsed_date = datetime.strptime(date_text, "%d.%m.%Y").date()
         except ValueError:
-            msg = bot.send_message(message.chat.id, "❌ Неверный формат. Введите дату как <b>ДД.ММ.ГГГГ</b>:",
-                                   parse_mode="HTML")
+            msg = bot.send_message(
+                message.chat.id,
+                "❌ Неверный формат. Введите дату как <b>ДД.ММ.ГГГГ</b> или напишите <b>отмена</b> для выхода:",
+                parse_mode="HTML"
+            )
             bot.register_next_step_handler(msg, save_broken_status_with_date, car_id)
             return
 
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                    UPDATE cars SET is_broken = 1, fix_date = ? WHERE car_id = ?
-                """, (parsed_date.strftime("%Y-%m-%d"), car_id))
+                UPDATE cars SET is_broken = 1, fix_date = ? WHERE car_id = ?
+            """, (parsed_date.strftime("%Y-%m-%d"), car_id))
             conn.commit()
 
-        bot.send_message(message.chat.id, f"✅Машина отмечена как сломанная до {parsed_date.strftime('%d.%m.%Y')}")
-        # admin_view_all_cars(message, user_id=message.from_user.id)
+        bot.send_message(
+            message.chat.id,
+            f"✅ Машина отмечена как сломанная до {parsed_date.strftime('%d.%m.%Y')}"
+        )
+
     except Exception as e:
         print(f"Ошибка 7386: {e}")
 
@@ -8524,7 +8536,7 @@ def handle_new_user(message):
 
 @bot.message_handler(commands=['add_car'])
 def admin_add_car(message):
-    if message.from_user.id not in ADMIN_IDS:
+    if message.from_user.id not in ADMIN_ID:
         bot.reply_to(message, "⛔ У тебя нет прав для этого!")
         return
     try:
