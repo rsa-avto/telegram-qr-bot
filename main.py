@@ -743,7 +743,40 @@ def send_long_message(chat_id, text, chunk_size=4000):
     for i in range(0, len(text), chunk_size):
         bot.send_message(chat_id, text[i:i + chunk_size])
 
+@bot.message_handler(commands=['bonuses'])
+def show_fuel_list(message):
+    try:
+        # Проверяем, что только директор может смотреть
+        if message.chat.id != DAN_TELEGRAM_ID:
+            return bot.send_message(message.chat.id, "⛔ У вас нет доступа к этой команде.")
 
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT * FROM fuel ORDER BY fuel_type, payment_method")
+            fuels = cursor.fetchall()
+
+        if not fuels:
+            bot.send_message(DAN_TELEGRAM_ID, "⛽ В таблице fuel пока нет данных.")
+            return
+
+        text = "⛽ <b>Список топлива:</b>\n\n"
+        for fuel in fuels:
+            text += (
+                f"🆔 ID: {fuel['id']}\n"
+                f"⛽ Топливо: {fuel['fuel_type']}\n"
+                f"💰 Цена: {fuel['price_per_litre']} ₽/л\n"
+                f"💳 Метод оплаты: {fuel['payment_method']}\n"
+                f"⭐ Бонусы: {fuel['bonuses']} баллов/л\n"
+                "───────────────\n"
+            )
+
+        bot.send_message(DAN_TELEGRAM_ID, text, parse_mode="HTML")
+
+    except Exception as e:
+        print(f"[ERROR] Ошибка при выводе топлива: {e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка при выводе топлива: {e}")
 @bot.message_handler(commands=['history'])
 def show_history(message):
     try:
