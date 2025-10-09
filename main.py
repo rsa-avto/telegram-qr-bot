@@ -747,8 +747,8 @@ def send_long_message(chat_id, text, chunk_size=4000):
 def show_fuel_list(message):
     try:
         # Проверяем, что только директор может смотреть
-        if message.chat.id != DAN_TELEGRAM_ID:
-            return bot.send_message(message.chat.id, "⛔ У вас нет доступа к этой команде.")
+        if message.from_user.id not in DAN_TELEGRAM_ID:
+            return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
 
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
