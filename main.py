@@ -781,7 +781,7 @@ def show_fuel_list(message):
 def show_history(message):
     try:
 
-        if message.from_user.id not in ADMINS:
+        if message.from_user.id not in ADMIN_IDS:
             return bot.send_message(message.chat.id, "❌ У вас нет доступа к этой команде.")
 
         with sqlite3.connect(DB_PATH) as conn:
