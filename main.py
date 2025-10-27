@@ -3775,7 +3775,32 @@ def handle_full_tank_accepted(call):
                         if operator_info:
                             operator_name = operator_info["name"]
                             operator_phone = operator_info["phone"]
+
+                            # Функция для нормализации номера
+                            def normalize_phone(phone):
+                                if not phone:
+                                    return None
+                                phone = str(phone).strip()
+                                # Убираем все символы кроме цифр и плюса
+                                phone = ''.join(ch for ch in phone if ch.isdigit() or ch == '+')
+                                # Приводим к формату +7
+                                if phone.startswith('+7'):
+                                    return phone
+                                elif phone.startswith('8'):
+                                    return '+7' + phone[1:]
+                                elif phone.startswith('7'):
+                                    return '+7' + phone[1:]
+                                elif phone.startswith('9') and len(phone) == 10:
+                                    # если номер без кода страны, добавляем +7
+                                    return '+7' + phone
+                                else:
+                                    return phone  # если формат неизвестен, возвращаем как есть
+
+                            operator_phone = normalize_phone(operator_phone)
+                            client_phone = normalize_phone(client_phone)
+
                             print(operator_phone, client_phone)
+
                             # 4. Сравниваем телефоны
                             if client_phone and operator_phone and client_phone == operator_phone:
                                 bot.send_message(
