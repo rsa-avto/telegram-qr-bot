@@ -777,6 +777,52 @@ def show_fuel_list(message):
     except Exception as e:
         print(f"[ERROR] Ошибка при выводе топлива: {e}")
         bot.send_message(message.chat.id, f"❌ Ошибка при выводе топлива: {e}")
+
+@bot.message_handler(commands=["export"])
+def export_to_excel(message):
+    if message.from_user.id != DAN_TELEGRAM_ID:
+        bot.reply_to(message, "⛔ У вас нет доступа к этой команде.")
+        return
+
+    try:
+        db_path = "cars.db"
+        if not os.path.exists(db_path):
+            bot.reply_to(message, "⚠️ Файл базы данных не найден.")
+            return
+
+        conn = sqlite3.connect(db_path)
+
+        # Таблицы, которые нужно выгрузить
+        tables_to_export = ['users', 'jobs', 'history', 'bookings', 'repair_bookings', 'bookings_wash', 'cars', 'rental_history', 'questions', 'operators', 'fuel', 'shifts']
+
+        # Имя файла с текущей датой
+        date_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        excel_path = f"cars_export_{date_str}.xlsx"
+
+        # Экспорт нужных таблиц
+        with pd.ExcelWriter(excel_path) as writer:
+            for table_name in tables_to_export:
+                try:
+                    df = pd.read_sql(f"SELECT * FROM {table_name};", conn)
+                    df.to_excel(writer, sheet_name=table_name, index=False)
+                except Exception as e:
+                    print(f"⚠️ Не удалось выгрузить таблицу {table_name}: {e}")
+
+        conn.close()
+
+        # Отправляем Excel в Telegram
+        with open(excel_path, "rb") as f:
+            bot.send_document(message.chat.id, f, caption=f"📊 Экспорт из базы cars.db ({date_str})")
+
+        # Удаляем временный файл
+        os.remove(excel_path)
+        bot.send_message(message.chat.id, "✅ Экспорт успешно выполнен.")
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка при экспорте: {e}")
+
+
+
 @bot.message_handler(commands=['history'])
 def show_history(message):
     try:
