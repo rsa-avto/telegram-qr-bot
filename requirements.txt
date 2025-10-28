@@ -8,3 +8,4 @@ aiofiles
 geopy
 pytesseract
 openpyxl
+pandas
