@@ -394,7 +394,7 @@ def export_to_excel(message):
                             ]
                             if not f.empty:
                                 bonus_percent = f.iloc[0]["bonuses"]
-                                return round(row["Литры"] * (bonus_percent / 100), 2)
+                                return round(row["Литры"] * bonus_percent, 2)
                             return 0
 
                         df["Баллы"] = df.apply(calc_points, axis=1)
