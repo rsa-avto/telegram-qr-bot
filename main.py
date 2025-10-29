@@ -370,12 +370,12 @@ def export_to_excel(message):
                 try:
                     df = pd.read_sql(f"SELECT * FROM {table_name};", conn)
 
-                    # 🔹 Добавляем вычисляемые столбцы только для history
+                    # 🔹 Обработка только для history
                     if table_name == "history":
                         fuel_df = pd.read_sql("SELECT * FROM fuel;", conn)
                         users_df = pd.read_sql("SELECT * FROM users;", conn)
 
-                        # Добавляем Телефон
+                        # Добавляем номер телефона
                         df = df.merge(
                             users_df[["telegram_id", "phone"]],
                             how="left",
@@ -385,21 +385,41 @@ def export_to_excel(message):
                         df.rename(columns={"phone": "Телефон"}, inplace=True)
                         df.drop(columns=["telegram_id"], inplace=True, errors="ignore")
 
-                        # Добавляем Баллы
+                        # 🔸 Функция расчета баллов
                         def calc_points(row):
-                            f = fuel_df[
-                                (fuel_df["fuel_type"] == row["Топливо"]) &
-                                ((fuel_df["payment_method"] == row["Оплата"]) |
-                                 (fuel_df["payment_method"] == "both"))
-                            ]
-                            if not f.empty:
-                                bonus_percent = f.iloc[0]["bonuses"]
-                                return round(row["Литры"] * bonus_percent, 2)
-                            return 0
+                            # нормализуем топливо
+                            fuel_name = str(row["Топливо"]).strip().lower()
+                            if fuel_name in ["газ", "gas"]:
+                                fuel_name = "gaz"
+                            elif fuel_name in ["бензин", "petrol", "gasoline"]:
+                                fuel_name = "benzin"
 
+                            # нормализуем оплату
+                            pay = str(row["Оплата"]).strip().lower()
+                            if "карта" in pay or "💳" in pay:
+                                pay = "card"
+                            elif "нал" in pay or "💵" in pay:
+                                pay = "cash"
+
+                            # ищем бонус
+                            f = fuel_df[
+                                (fuel_df["fuel_type"].str.lower() == fuel_name) &
+                                ((fuel_df["payment_method"].str.lower() == pay) |
+                                 (fuel_df["payment_method"].str.lower() == "both"))
+                            ]
+
+                            if not f.empty:
+                                # заменяем запятую на точку, чтобы не было ошибок
+                                bonus_percent = float(str(f.iloc[0]["bonuses"]).replace(",", "."))
+                                points = round(float(row["Литры"]) * bonus_percent, 2)
+                                return points
+                            else:
+                                return 0
+
+                        # Добавляем столбец Баллы
                         df["Баллы"] = df.apply(calc_points, axis=1)
 
-                    # 💾 Записываем таблицу в Excel
+                    # 💾 Сохраняем таблицу в Excel
                     df.to_excel(writer, sheet_name=table_name, index=False)
 
                 except Exception as e:
@@ -407,6 +427,7 @@ def export_to_excel(message):
 
         conn.close()
 
+        # Отправляем файл в Telegram
         with open(excel_path, "rb") as f:
             bot.send_document(message.chat.id, f, caption=f"📊 Экспорт из базы cars.db ({date_str})")
 
@@ -423,7 +444,7 @@ months = {
     '10': 'Октябрь', '11': 'Ноябрь', '12': 'Декабрь'
 }
 OPERATORS = {
-    'station_1': 5035760364,
+    'station_1': 8406093193,
     'station_2': 7956696604,
     'station_3': 8411184981,
     'station_4': 8406093193
