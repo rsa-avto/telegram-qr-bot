@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 import pandas as pd
 import html
@@ -81,6 +80,7 @@ STATION_ADDRESSES_TO_CODES = {v: k for k, v in STATION_CODES_TO_ADDRESSES.items(
 PUBLIC_ID = 'cloudpayments-public-id'
 API_KEY = 'cloudpayments-api-key'
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 # Для Windows и локальной разработки
 if os.name == "nt":  # Windows
@@ -347,7 +347,74 @@ def setup_tables():
     """)
     conn.commit()
     conn.close()
+@bot.message_handler(commands=["export"])
+def export_to_excel(message):
+    if message.from_user.id != DAN_TELEGRAM_ID:
+        bot.reply_to(message, "⛔ У вас нет доступа к этой команде.")
+        return
 
+    try:
+        db_path = "cars.db"
+        if not os.path.exists(db_path):
+            bot.reply_to(message, "⚠️ Файл базы данных не найден.")
+            return
+
+        conn = sqlite3.connect(db_path)
+        date_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        excel_path = f"cars_export_{date_str}.xlsx"
+
+        tables_to_export = ['users', 'operators', 'fuel', 'shifts', 'history']
+
+        with pd.ExcelWriter(excel_path) as writer:
+            for table_name in tables_to_export:
+                try:
+                    df = pd.read_sql(f"SELECT * FROM {table_name};", conn)
+
+                    # 🔹 Добавляем вычисляемые столбцы только для history
+                    if table_name == "history":
+                        fuel_df = pd.read_sql("SELECT * FROM fuel;", conn)
+                        users_df = pd.read_sql("SELECT * FROM users;", conn)
+
+                        # Добавляем Телефон
+                        df = df.merge(
+                            users_df[["telegram_id", "phone"]],
+                            how="left",
+                            left_on="Telegram_ID",
+                            right_on="telegram_id"
+                        )
+                        df.rename(columns={"phone": "Телефон"}, inplace=True)
+                        df.drop(columns=["telegram_id"], inplace=True, errors="ignore")
+
+                        # Добавляем Баллы
+                        def calc_points(row):
+                            f = fuel_df[
+                                (fuel_df["fuel_type"] == row["Топливо"]) &
+                                ((fuel_df["payment_method"] == row["Оплата"]) |
+                                 (fuel_df["payment_method"] == "both"))
+                            ]
+                            if not f.empty:
+                                bonus_percent = f.iloc[0]["bonuses"]
+                                return round(row["Литры"] * (bonus_percent / 100), 2)
+                            return 0
+
+                        df["Баллы"] = df.apply(calc_points, axis=1)
+
+                    # 💾 Записываем таблицу в Excel
+                    df.to_excel(writer, sheet_name=table_name, index=False)
+
+                except Exception as e:
+                    print(f"⚠️ Не удалось выгрузить таблицу {table_name}: {e}")
+
+        conn.close()
+
+        with open(excel_path, "rb") as f:
+            bot.send_document(message.chat.id, f, caption=f"📊 Экспорт из базы cars.db ({date_str})")
+
+        os.remove(excel_path)
+        bot.send_message(message.chat.id, "✅ Экспорт успешно выполнен.")
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка при экспорте: {e}")
 
 months = {
     '01': 'Январь', '02': 'Февраль', '03': 'Март',
@@ -356,7 +423,7 @@ months = {
     '10': 'Октябрь', '11': 'Ноябрь', '12': 'Декабрь'
 }
 OPERATORS = {
-    'station_1': 8340223502,
+    'station_1': 5035760364,
     'station_2': 7956696604,
     'station_3': 8411184981,
     'station_4': 8406093193
@@ -743,6 +810,10 @@ def send_long_message(chat_id, text, chunk_size=4000):
     for i in range(0, len(text), chunk_size):
         bot.send_message(chat_id, text[i:i + chunk_size])
 
+
+
+
+
 @bot.message_handler(commands=['bonuses'])
 def show_fuel_list(message):
     try:
@@ -758,7 +829,7 @@ def show_fuel_list(message):
             fuels = cursor.fetchall()
 
         if not fuels:
-            bot.send_message(DAN_TELEGRAM_ID, "⛽ В таблице fuel пока нет данных.")
+            bot.send_message(DIRECTOR_ID, "⛽ В таблице fuel пока нет данных.")
             return
 
         text = "⛽ <b>Список топлива:</b>\n\n"
@@ -772,56 +843,11 @@ def show_fuel_list(message):
                 "───────────────\n"
             )
 
-        bot.send_message(DAN_TELEGRAM_ID, text, parse_mode="HTML")
+        bot.send_message(DIRECTOR_ID, text, parse_mode="HTML")
 
     except Exception as e:
         print(f"[ERROR] Ошибка при выводе топлива: {e}")
         bot.send_message(message.chat.id, f"❌ Ошибка при выводе топлива: {e}")
-
-@bot.message_handler(commands=["export"])
-def export_to_excel(message):
-    if message.from_user.id != DAN_TELEGRAM_ID:
-        bot.reply_to(message, "⛔ У вас нет доступа к этой команде.")
-        return
-
-    try:
-        db_path = "cars.db"
-        if not os.path.exists(db_path):
-            bot.reply_to(message, "⚠️ Файл базы данных не найден.")
-            return
-
-        conn = sqlite3.connect(db_path)
-
-        # Таблицы, которые нужно выгрузить
-        tables_to_export = ['users', 'jobs', 'history', 'bookings', 'repair_bookings', 'bookings_wash', 'cars', 'rental_history', 'questions', 'operators', 'fuel', 'shifts']
-
-        # Имя файла с текущей датой
-        date_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        excel_path = f"cars_export_{date_str}.xlsx"
-
-        # Экспорт нужных таблиц
-        with pd.ExcelWriter(excel_path) as writer:
-            for table_name in tables_to_export:
-                try:
-                    df = pd.read_sql(f"SELECT * FROM {table_name};", conn)
-                    df.to_excel(writer, sheet_name=table_name, index=False)
-                except Exception as e:
-                    print(f"⚠️ Не удалось выгрузить таблицу {table_name}: {e}")
-
-        conn.close()
-
-        # Отправляем Excel в Telegram
-        with open(excel_path, "rb") as f:
-            bot.send_document(message.chat.id, f, caption=f"📊 Экспорт из базы cars.db ({date_str})")
-
-        # Удаляем временный файл
-        os.remove(excel_path)
-        bot.send_message(message.chat.id, "✅ Экспорт успешно выполнен.")
-
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка при экспорте: {e}")
-
-
 
 @bot.message_handler(commands=['history'])
 def show_history(message):
@@ -2356,6 +2382,7 @@ def handle_confirm_cancel(msg):
                 bot.send_message(ADMIN_ID2, text_admin, parse_mode="HTML")
             else:
                 cancel1_booking(booking_id, chat_id)
+
         else:
             cancel1_booking(booking_id, chat_id)
 
@@ -3787,18 +3814,19 @@ def handle_full_tank_accepted(call):
                 client_phone = user_data["phone"] if user_data else None
                 print(session.get('station'))
                 # Вставляем в историю
-                cur.execute('''
+                if payment_info != "🎁 Баллы":
+                    cur.execute('''
                         INSERT INTO history ("Дата", "Адрес", "Топливо", "Рубли", "Литры", "Оплата", "Telegram_ID")
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                     ''', (
-                    datetime.now().strftime("%Y-%m-%d %H:%M"),  # Дата
-                    session.get('station'),  # Здесь лучше хранить station_code, а не адрес
-                    fuel_name,
-                    rub,
-                    litres,
-                    payment_info,
-                    client_chat_id
-                ))
+                        datetime.now().strftime("%Y-%m-%d %H:%M"),  # Дата
+                        STATION_NAMES.get(session.get('station'), 'Неизвестно'),  # Здесь лучше хранить station_code, а не адрес
+                        fuel_name,
+                        rub,
+                        litres,
+                        payment_info,
+                        client_chat_id
+                    ))
 
                 station_code = session.get('station')  # 'station_1', 'station_2', ...
                 if station_code:
