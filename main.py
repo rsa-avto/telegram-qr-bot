@@ -463,6 +463,8 @@ STATION_NAMES = {
 }
 
 
+
+
 def add_booking(user_id, car_id, service, date, time, status='pending'):
     cursor.execute('''
         INSERT INTO bookings (user_id, car_id, service, date, time, status)
@@ -478,7 +480,74 @@ def get_busy_slots(car_id, date, service):
     ''', (car_id, date, service))
     return [row[0] for row in cursor.fetchall()]
 
+import logging
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from threading import Lock
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Лок для защиты user_sessions / price_change_sessions при записи
+sessions_lock = Lock()
+
+
+# Безопасные обёртки над Telegram-методами чтобы не 'молчать' в случае ошибок
+def safe_send(chat_id, text=None, **kwargs):
+    try:
+        if chat_id is None:
+            logger.error("safe_send: chat_id is None, message not sent. text=%s", text)
+            notify_admin(f"[CRIT] Попытка отправить сообщение с None chat_id. Текст: {text}")
+            return None
+        return bot.send_message(chat_id, text, **kwargs)
+    except Exception as e:
+        logger.exception("safe_send() failed for chat_id=%s text=%s", chat_id, text)
+        notify_admin(f"[ERROR] Не удалось отправить сообщение {chat_id}: {e}\nТекст: {text}")
+        return None
+
+def safe_edit_text(chat_id, message_id, text):
+    try:
+        return bot.edit_message_text(text, chat_id=chat_id, message_id=message_id)
+    except Exception as e:
+        logger.exception("safe_edit_text failed: chat_id=%s message_id=%s", chat_id, message_id)
+        notify_admin(f"[ERROR] Не удалось отредактировать сообщение {chat_id}/{message_id}: {e}")
+        return None
+
+def safe_edit_reply_markup(chat_id, message_id):
+    try:
+        return bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+    except Exception as e:
+        logger.exception("safe_edit_reply_markup failed: %s/%s", chat_id, message_id)
+        notify_admin(f"[ERROR] Не удалось убрать кнопки {chat_id}/{message_id}: {e}")
+        return None
+
+def notify_admin(text):
+    try:
+        # если ADMIN_ID2 не задан, логируем
+        admin = globals().get('ADMIN_ID2')
+        if admin:
+            bot.send_message(admin, text)
+        else:
+            logger.warning("notify_admin: no ADMIN_ID2 set. text=%s", text)
+    except Exception:
+        logger.exception("notify_admin failed")
+
+# helper получения цены (возвращает float)
+def get_price_per_litre_safe(fuel, payment_method=None):
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            if payment_method:
+                cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? AND payment_method = ? LIMIT 1", (fuel, payment_method))
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    return float(row[0])
+            cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? LIMIT 1", (fuel,))
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                return float(row[0])
+    except Exception as e:
+        logger.exception("get_price_per_litre_safe DB error")
+    return 0.0
 # очистка заявок
 def remove_expired_bookings():
     while True:
@@ -3257,59 +3326,50 @@ def choose_address_menu(chat_id):
         m.chat.id in user_sessions and
         user_sessions[m.chat.id].get('amount_type') and
         user_sessions[m.chat.id].get('amount') is None and
-        user_sessions[m.chat.id].get('amount_type') != 'fulltank'  # игнорируем полный бак здесь
+        user_sessions[m.chat.id].get('amount_type') != 'fulltank'
 ))
 def amount_input_handler(msg):
     try:
         chat_id = msg.chat.id
-
         try:
             amount = float(msg.text.replace(',', '.'))
-            user_sessions[chat_id]['amount'] = amount
         except ValueError:
-            bot.send_message(chat_id, "❌ Введите корректное число")
+            safe_send(chat_id, "❌ Введите корректное число")
             return
 
-        # Удаляем старое сообщение от бота, если было
+        with sessions_lock:
+            user_sessions.setdefault(chat_id, {})['amount'] = amount
+
+        # удаляем старое сообщение
         last_msg_id = user_sessions[chat_id].get("last_bot_msg_id")
         if last_msg_id:
             try:
                 bot.delete_message(chat_id, last_msg_id)
             except Exception as e:
-                print(f"[!] Не удалось удалить сообщение: {e}")
+                logger.warning("[!] Не удалось удалить сообщение: %s", e)
 
-        data = user_sessions[chat_id]
-        fuel_name = 'Бензин' if data['fuel'] == 'benzin' else 'Газ'
-        price = 0
-        try:
-            print("[LOOKUP] looking for:", repr(data['fuel']))
-            with sqlite3.connect("cars.db") as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT fuel_type, quote(fuel_type), length(fuel_type), price_per_litre FROM fuel")
-                print("[FUEL TABLE DUMP]")
-                for r in cur.fetchall():
-                    print("  ", r)
-                cur.execute("SELECT price_per_litre FROM fuel WHERE TRIM(fuel_type)=TRIM(?) LIMIT 1", (data['fuel'],))
-                row = cur.fetchone()
-                print("[SELECT RESULT]", row)
-                if row:
-                    print(price)
-                    price = row[0]
-        except Exception as e:
-            print(f"[fuel price] Ошибка: {e}")
-            price = 0
+        data = user_sessions.get(chat_id, {})
+        fuel_name = 'Бензин' if data.get('fuel') == 'benzin' else 'Газ'
 
-        if data['amount_type'] == 'rub':
+        # используем safe helper
+        price = get_price_per_litre_safe(data.get('fuel'))
+        if not price or price == 0:
+            safe_send(chat_id, "❌ Не удалось получить цену топлива. Попробуйте выбрать колонку/станцию снова.")
+            return
+
+        if data.get('amount_type') == 'rub':
             litres = round(amount / price, 2)
             rub = amount
         else:
             litres = amount
             rub = round(amount * price, 2)
-        user_sessions[chat_id]['litres'] = litres
+
+        with sessions_lock:
+            user_sessions[chat_id]['litres'] = litres
 
         confirm_text = (f"🧾 Проверьте данные:\n"
-                        f"Станция: {STATION_NAMES.get(data['station'], 'Неизвестно')}\n"
-                        f"Колонка: {data['column']}\n"
+                        f"Станция: {STATION_NAMES.get(data.get('station'), 'Неизвестно')}\n"
+                        f"Колонка: {data.get('column')}\n"
                         f"Топливо: {fuel_name}\n"
                         f"Объём: {litres} л\n"
                         f"Сумма: {rub:.2f} ₽")
@@ -3319,41 +3379,33 @@ def amount_input_handler(msg):
             InlineKeyboardButton("✅ Верно", callback_data="confirm"),
             InlineKeyboardButton("❌ Отмена", callback_data="cancel")
         )
-        # ⬇️ Сохраняем ID отправленного ботом сообщения
-        sent = bot.send_message(chat_id, confirm_text, reply_markup=markup)
-        user_sessions[chat_id]['last_bot_msg_id'] = sent.message_id
-    except Exception as e:
-        print(f"Ошибка 2647: {e}")
-
+        sent = safe_send(chat_id, confirm_text, reply_markup=markup)
+        if sent:
+            with sessions_lock:
+                user_sessions[chat_id]['last_bot_msg_id'] = sent.message_id
+    except Exception:
+        logger.exception("Ошибка в amount_input_handler")
+        safe_send(msg.chat.id, "❌ Внутренняя ошибка. Администратор уведомлен.")
 
 def finalize_order(chat_id):
     try:
-        data = user_sessions[chat_id]
+        data = user_sessions.get(chat_id, {}) or {}
         required_fields = ['station', 'column', 'fuel', 'amount_type', 'amount', 'payment_method']
         missing = [field for field in required_fields if data.get(field) is None]
         if missing:
-            bot.send_message(chat_id, f"❌ Не хватает данных: {', '.join(missing)}. Попробуйте заново.")
+            safe_send(chat_id, f"❌ Не хватает данных: {', '.join(missing)}. Попробуйте заново.")
             reset_state(chat_id)
             return
 
         if data.get('amount_type') == 'fulltank':
             start_full_tank_procedure(chat_id)
             return
-        fuel = data['fuel']
-        price = 0
-        try:
-            with sqlite3.connect(DB_PATH) as conn:
-                cur = conn.cursor()
-                # Берём первую попавшуюся цену для выбранного топлива
-                cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? AND payment_method = ? LIMIT 1", (fuel, data['payment_method']))
-                row = cur.fetchone()
-                if row:
-                    price = row[0]
-        except Exception as e:
-            print(f"[fuel price] Ошибка: {e}")
-            price = 0
 
-        fuel_name = 'Бензин' if fuel == 'benzin' else 'Газ'
+        fuel = data.get('fuel')
+        price = get_price_per_litre_safe(fuel, data.get('payment_method'))
+        if price == 0:
+            safe_send(chat_id, "❌ Не удалось определить цену топлива. Попробуйте позже.")
+            return
 
         if data['amount_type'] == 'rub':
             litres = round(data['amount'] / price, 2)
@@ -3362,36 +3414,43 @@ def finalize_order(chat_id):
             litres = data['amount']
             rub = round(data['amount'] * price, 2)
 
-        station_code = data['station']
+        station_code = data.get('station')
         station_name = STATION_NAMES.get(station_code, "Неизвестно")
         operator_id = OPERATORS.get(station_code)
 
-        user_sessions[chat_id].update({
-            'rub': rub,
-            'litres': litres,
-            'station_name': station_name,
-            'fuel_name': fuel_name,
-        })
+        with sessions_lock:
+            user_sessions[chat_id].update({
+                'rub': rub,
+                'litres': litres,
+                'station_name': station_name,
+                'fuel_name': ('Бензин' if fuel == 'benzin' else 'Газ'),
+            })
 
         message = (f"🧾 Новый заказ\n"
                    f"Станция: {station_name}\n"
-                   f"Колонка: {data['column']}\n"
-                   f"Топливо: {fuel_name}\n"
+                   f"Колонка: {data.get('column')}\n"
+                   f"Топливо: {('Бензин' if fuel == 'benzin' else 'Газ')}\n"
                    f"Объем: {litres} л\n"
                    f"Сумма: {rub:.2f} ₽\n"
-                   f"Оплата: {'💵 Наличные' if data['payment_method'] == 'cash' else '💳 Безнал'}")
+                   f"Оплата: {'💵 Наличные' if data.get('payment_method') == 'cash' else '💳 Безнал'}")
 
-        if data['payment_method'] == 'cash':
+        if data.get('payment_method') == 'cash':
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("✅ Принял", callback_data=f"accepted_{chat_id}"))
-            bot.send_message(operator_id, message, reply_markup=markup)
-            bot.send_message(chat_id, "✅ Отлично! Подойдите и оплатите свой заказ.")
+            if operator_id:
+                safe_send(operator_id, message, reply_markup=markup)
+            else:
+                logger.warning("finalize_order: operator_id is None for station %s", station_code)
+                notify_admin(f"[WARN] Не найден оператор для {station_code}, заказ {chat_id} не отправлен оператору.")
+            safe_send(chat_id, "✅ Отлично! Подойдите и оплатите свой заказ.")
         else:
-            bot.send_message(chat_id, f"💳 Ссылка на оплату (заглушка): https://pay.tinkoff.ru")
-            bot.send_message(operator_id, message)
+            safe_send(chat_id, f"💳 Ссылка на оплату (заглушка): https://pay.tinkoff.ru")
+            if operator_id:
+                safe_send(operator_id, message)
             save_to_db(chat_id)
-    except Exception as e:
-        print(f"Ошибка 2703: {e}")
+    except Exception:
+        logger.exception("Ошибка в finalize_order")
+        safe_send(chat_id, "❌ Произошла внутренняя ошибка при формировании заказа.")
 
 
 def start_full_tank_procedure(chat_id):
@@ -3526,118 +3585,91 @@ def handle_fulltank_callback(call):
 def handle_full_tank_litres_input(message):
     try:
         operator_chat_id = message.chat.id
-
-        # Находим клиента
         client_chat_id = None
-        for cid, data in price_change_sessions.items():
-            if data.get('operator_chat_id') == operator_chat_id and data.get('status') == 'started':
-                client_chat_id = cid
-                break
+        with sessions_lock:
+            for cid, data in price_change_sessions.items():
+                if data.get('operator_chat_id') == operator_chat_id and data.get('status') == 'started':
+                    client_chat_id = cid
+                    break
 
         if client_chat_id is None:
-            bot.send_message(operator_chat_id, "❌ Не удалось определить клиента для этого заказа.")
+            safe_send(operator_chat_id, "❌ Не удалось определить клиента для этого заказа.")
             return
 
         try:
             litres = float(message.text.replace(',', '.'))
         except ValueError:
-            bot.send_message(operator_chat_id, "❌ Введите корректное число литров.")
+            safe_send(operator_chat_id, "❌ Введите корректное число литров.")
             return
 
-        # Обновляем сессию
-        price_change_sessions[client_chat_id]['litres'] = litres
-        price_change_sessions[client_chat_id]['status'] = 'litres_entered'
+        with sessions_lock:
+            price_change_sessions[client_chat_id]['litres'] = litres
+            price_change_sessions[client_chat_id]['status'] = 'litres_entered'
 
-        # Получаем данные
-        session = user_sessions.get(client_chat_id, {})
+        session = user_sessions.get(client_chat_id, {}) or {}
         fuel = session.get('fuel')
-        price = 0
-        try:
-            with sqlite3.connect(DB_PATH) as conn:
-                cur = conn.cursor()
-                # Берём первую попавшуюся цену для выбранного топлива
-                cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? LIMIT 1", (fuel,))
-                row = cur.fetchone()
-                if row:
-                    price = row[0]
-        except Exception as e:
-            print(f"[fuel price] Ошибка: {e}")
-            price = 0
+        price = get_price_per_litre_safe(fuel)
+        if price == 0:
+            safe_send(operator_chat_id, "❌ Не удалось получить цену топлива для расчёта. Проверьте БД.")
+            notify_admin(f"[ERROR] price==0 for fuel={fuel} client={client_chat_id}")
+            return
 
         rub = round(litres * price, 2)
         fuel_name = 'Бензин' if fuel == 'benzin' else 'Газ'
-        # Отправляем клиенту сообщение с выбором оплаты
         text_client = (
             f"⛽ В ваш бак вошло {litres:.2f} л {fuel_name}.\n"
             f"К оплате: {rub:.2f} ₽\n"
             "Выберите способ оплаты:"
         )
+
         try:
             with sqlite3.connect(DB_PATH) as conn:
                 cur = conn.cursor()
                 cur.execute("SELECT bonus FROM users WHERE telegram_id = ?", (client_chat_id,))
                 row = cur.fetchone()
                 current_bonus = int(row[0]) if row and row[0] else 0
-        except Exception as e:
-            print(f"[bonus check] Ошибка: {e}")
+        except Exception:
+            logger.exception("bonus check failed")
             current_bonus = 0
 
-        # Формируем кнопки
         markup_client = InlineKeyboardMarkup()
         markup_client.add(
             InlineKeyboardButton("💵 Наличные", callback_data=f"payment_cash_full_{client_chat_id}"),
             InlineKeyboardButton("💳 Карта", callback_data=f"payment_card_full_{client_chat_id}")
         )
-
-        # Если хватает баллов на всю сумму
         if current_bonus >= rub:
-            markup_client.add(
-                InlineKeyboardButton("🎁 Оплатить баллами", callback_data=f"paying_bonus_full_{client_chat_id}")
-            )
-        bot.send_message(client_chat_id, text_client, reply_markup=markup_client)
-    except Exception as e:
-        print(f"Ошибка 2877: {e}")
+            markup_client.add(InlineKeyboardButton("🎁 Оплатить баллами", callback_data=f"paying_bonus_full_{client_chat_id}"))
 
+        safe_send(client_chat_id, text_client, reply_markup=markup_client)
+    except Exception:
+        logger.exception("Ошибка в handle_full_tank_litres_input")
+        safe_send(operator_chat_id, "❌ Внутренняя ошибка. Администратор уведомлен.")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("paying_bonus_full_"))
 def handle_pay_bonus_full(call):
     try:
         bot.answer_callback_query(call.id)
         client_chat_id = int(call.data.split("_")[-1])
+
         try:
-            bot.edit_message_reply_markup(
-                chat_id=call.message.chat.id,
-                message_id=call.message.message_id,
-                reply_markup=None
-            )
-        except Exception as e:
-            print(f"[UI ERROR] Не удалось убрать кнопку: {e}")
-        session = user_sessions.get(client_chat_id, {}) or {}
-        litres = price_change_sessions.get(client_chat_id, {}).get('litres', 0)
-        try:
-            litres = float(litres)
+            safe_edit_reply_markup(call.message.chat.id, call.message.message_id)
         except Exception:
-            litres = 0.0
+            pass
 
-        fuel = session.get('fuel')
-        session = user_sessions.get(client_chat_id, {})
+        with sessions_lock:
+            litres = float(price_change_sessions.get(client_chat_id, {}).get('litres', 0.0))
+            price_change_sessions[client_chat_id]['payment_method'] = "bonus"
+
+        session = user_sessions.get(client_chat_id, {}) or {}
         fuel = session.get('fuel')
 
-        price = 0
-        try:
-            with sqlite3.connect(DB_PATH) as conn:
-                cur = conn.cursor()
-                # Берём первую попавшуюся цену для выбранного топлива
-                cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ? LIMIT 1", (fuel,))
-                row = cur.fetchone()
-                if row:
-                    price = row[0]
-        except Exception as e:
-            print(f"[fuel price] Ошибка: {e}")
-            price = 0
-        fuel_name = 'Бензин' if fuel == 'benzin' else 'Газ'
+        price = get_price_per_litre_safe(fuel)
+        if price == 0:
+            safe_send(client_chat_id, "❌ Не удалось получить цену топлива. Обратитесь в поддержку.")
+            notify_admin(f"[ERROR] price==0 in paying_bonus_full for client {client_chat_id}")
+            return
+
         rub = round(litres * price, 2)
-
 
         try:
             with sqlite3.connect(DB_PATH) as conn:
@@ -3646,23 +3678,17 @@ def handle_pay_bonus_full(call):
                 row = cur.fetchone()
                 current_bonus = int(row[0]) if row and row[0] else 0
 
-                if current_bonus >= rub:
+                if current_bonus >= int(rub):
                     new_bonus = current_bonus - int(rub)
                     cur.execute("UPDATE users SET bonus = ? WHERE telegram_id = ?", (new_bonus, client_chat_id))
                     conn.commit()
 
-                    bot.send_message(client_chat_id, f"✅ Оплата бонусами прошла успешно!\n💰 Остаток: {new_bonus} баллов.")
-
-                    # Сохраняем метод оплаты в сессию
-                    price_change_sessions[client_chat_id]['payment_method'] = "bonus"
-
-                    # Запись в историю
-                    cur.execute('''
-                            INSERT INTO history ("Адрес", "Топливо", "Рубли", "Литры", "Оплата", "Telegram_ID")
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        ''', (
+                    safe_send(client_chat_id, f"✅ Оплата бонусами прошла успешно!\n💰 Остаток: {new_bonus} баллов.")
+                    # запись в историю и уведомление оператору
+                    cur.execute('''INSERT INTO history ("Адрес", "Топливо", "Рубли", "Литры", "Оплата", "Telegram_ID")
+                                   VALUES (?, ?, ?, ?, ?, ?)''', (
                         STATION_NAMES.get(session.get('station'), 'Неизвестно'),
-                        fuel_name,
+                        ('Бензин' if fuel == 'benzin' else 'Газ'),
                         rub,
                         litres,
                         "🎁 Баллами",
@@ -3670,7 +3696,6 @@ def handle_pay_bonus_full(call):
                     ))
                     conn.commit()
 
-                    # Оповещаем оператора
                     station_code = session.get('station')
                     station_address = STATION_CODES_TO_ADDRESSES.get(station_code)
                     operator_id = STATION_OPERATORS.get(station_address)
@@ -3679,24 +3704,26 @@ def handle_pay_bonus_full(call):
                             f"✅ Клиент оплатил бонусами.\n"
                             f"Станция: {STATION_NAMES.get(session.get('station'), 'Неизвестно')}\n"
                             f"Колонка: {session.get('column')}\n"
-                            f"Топливо: {fuel_name}\n"
+                            f"Топливо: {('Бензин' if fuel == 'benzin' else 'Газ')}\n"
                             f"Литры: {litres:.2f}\n"
                             f"Сумма (в баллах): {rub}"
                         )
-                        markup_operator = InlineKeyboardMarkup()
-                        markup_operator.add(
+                        safe_send(operator_id, text_operator, reply_markup=InlineKeyboardMarkup().add(
                             InlineKeyboardButton("✅ Заправил", callback_data=f"full_tank_accepted_{client_chat_id}")
-                        )
-                        bot.send_message(operator_id, text_operator, reply_markup=markup_operator)
+                        ))
+                    else:
+                        logger.warning("paying_bonus_full: operator_id is None for station %s", station_code)
                 else:
-                    bot.send_message(client_chat_id, "❌ Недостаточно баллов для оплаты.")
-        except Exception as e:
-            print(f"[pay_bonus_full] Ошибка: {e}")
-            bot.send_message(client_chat_id, "❌ Произошла ошибка при оплате бонусами.")
-
-    except Exception as e:
-        print(f"Ошибка 2960: {e}")
-
+                    safe_send(client_chat_id, "❌ Недостаточно баллов для оплаты.")
+        except Exception:
+            logger.exception("Ошибка в paying_bonus_full DB flow")
+            safe_send(client_chat_id, "❌ Произошла ошибка при оплате баллами. Администратор уведомлен.")
+    except Exception:
+        logger.exception("Ошибка в handle_pay_bonus_full")
+        try:
+            safe_send(call.from_user.id, "❌ Внутренняя ошибка. Администратор уведомлен.")
+        except Exception:
+            pass
 # --- Обработка выбора оплаты ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith("payment_"))
 def handle_payment_choice(call):
