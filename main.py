@@ -901,7 +901,42 @@ def send_long_message(chat_id, text, chunk_size=4000):
         bot.send_message(chat_id, text[i:i + chunk_size])
 
 
+@bot.message_handler(commands=['delete_history'])
+def delete_history(message):
+    try:
+        parts = message.text.split()
 
+        # Проверка формата
+        if len(parts) != 2:
+            bot.reply_to(message, "❗ Формат:\n/delete_history <номер>\nНапример:\n/delete_history 3")
+            return
+
+        record_id = int(parts[1])
+
+        import sqlite3
+        conn = sqlite3.connect("cars.db")
+        cursor = conn.cursor()
+
+        # Проверяем, есть ли такая запись
+        cursor.execute('SELECT * FROM history WHERE "№" = ?', (record_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            bot.reply_to(message, f"❗ Запись №{record_id} не найдена.")
+            conn.close()
+            return
+
+        # Удаляем запись
+        cursor.execute('DELETE FROM history WHERE "№" = ?', (record_id,))
+        conn.commit()
+        conn.close()
+
+        bot.reply_to(message, f"✔ Запись №{record_id} удалена.")
+
+    except ValueError:
+        bot.reply_to(message, "❗ Номер должен быть числом.\nПример: /delete_history 2")
+    except Exception as e:
+        bot.reply_to(message, f"⚠ Ошибка: {e}")
 
 
 @bot.message_handler(commands=['bonuses'])
