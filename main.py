@@ -50,7 +50,7 @@ import os
 # --- НАСТРОЙКИ ---
 API_TOKEN = os.getenv("BOT_TOKEN")
 
-bot = telebot.TeleBot(API_TOKEN, timeout = 120)
+bot = telebot.TeleBot(API_TOKEN)
 ADMIN_ID = [6040726738, 5035760364 ]  # <-- ЗАМЕНИ на свой Telegram ID
 #
 ADMIN_ID2 = 6040726738
