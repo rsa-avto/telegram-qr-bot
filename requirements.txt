@@ -9,3 +9,4 @@ geopy
 pytesseract
 openpyxl
 pandas
+xlsxwriter
