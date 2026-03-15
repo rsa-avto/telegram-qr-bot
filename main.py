@@ -347,100 +347,152 @@ def setup_tables():
     """)
     conn.commit()
     conn.close()
+import os
+import sqlite3
+import pandas as pd
+from datetime import datetime
 from telebot.types import InputFile
+
 @bot.message_handler(commands=["export"])
 def export_to_excel(message):
+
     if message.from_user.id != DAN_TELEGRAM_ID:
         bot.reply_to(message, "⛔ У вас нет доступа к этой команде.")
         return
 
     try:
+        bot.send_message(message.chat.id, "📦 Формирую Excel файл...")
+
         db_path = "cars.db"
+
         if not os.path.exists(db_path):
             bot.reply_to(message, "⚠️ Файл базы данных не найден.")
             return
 
-        conn = sqlite3.connect(db_path)
         date_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
         excel_path = f"cars_export_{date_str}.xlsx"
 
-        tables_to_export = ['users', 'operators', 'fuel', 'shifts', 'history']
+        tables_to_export = ["users", "operators", "fuel", "shifts", "history"]
 
-        with pd.ExcelWriter(excel_path) as writer:
-            for table_name in tables_to_export:
-                try:
-                    df = pd.read_sql(f"SELECT * FROM {table_name};", conn)
+        with sqlite3.connect(db_path) as conn:
 
-                    # 🔹 Обработка только для history
-                    if table_name == "history":
-                        fuel_df = pd.read_sql("SELECT * FROM fuel;", conn)
-                        users_df = pd.read_sql("SELECT * FROM users;", conn)
+            with pd.ExcelWriter(excel_path, engine="xlsxwriter") as writer:
 
-                        # Добавляем номер телефона
-                        df = df.merge(
-                            users_df[["telegram_id", "phone"]],
-                            how="left",
-                            left_on="Telegram_ID",
-                            right_on="telegram_id"
-                        )
-                        df.rename(columns={"phone": "Телефон"}, inplace=True)
-                        df.drop(columns=["telegram_id"], inplace=True, errors="ignore")
+                for table_name in tables_to_export:
 
-                        # 🔸 Функция расчета баллов
-                        def calc_points(row):
-                            # нормализуем топливо
-                            fuel_name = str(row["Топливо"]).strip().lower()
-                            if fuel_name in ["газ", "gas"]:
-                                fuel_name = "gaz"
-                            elif fuel_name in ["бензин", "petrol", "gasoline"]:
-                                fuel_name = "benzin"
+                    try:
+                        df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
 
-                            # нормализуем оплату
-                            pay = str(row["Оплата"]).strip().lower()
-                            if "карта" in pay or "💳" in pay:
-                                pay = "card"
-                            elif "нал" in pay or "💵" in pay:
-                                pay = "cash"
+                        # --- обработка history ---
+                        if table_name == "history":
 
-                            # ищем бонус
-                            f = fuel_df[
-                                (fuel_df["fuel_type"].str.lower() == fuel_name) &
-                                ((fuel_df["payment_method"].str.lower() == pay) |
-                                 (fuel_df["payment_method"].str.lower() == "both"))
-                            ]
+                            fuel_df = pd.read_sql("SELECT * FROM fuel", conn)
+                            users_df = pd.read_sql("SELECT telegram_id, phone FROM users", conn)
 
-                            if not f.empty:
-                                # заменяем запятую на точку, чтобы не было ошибок
-                                bonus_percent = float(str(f.iloc[0]["bonuses"]).replace(",", "."))
-                                points = round(float(row["Литры"]) * bonus_percent, 2)
-                                return points
-                            else:
-                                return 0
+                            # добавляем телефон
+                            df = df.merge(
+                                users_df,
+                                how="left",
+                                left_on="Telegram_ID",
+                                right_on="telegram_id"
+                            )
 
-                        # Добавляем столбец Баллы
-                        df["Баллы"] = df.apply(calc_points, axis=1)
+                            df.rename(columns={"phone": "Телефон"}, inplace=True)
+                            df.drop(columns=["telegram_id"], inplace=True, errors="ignore")
 
-                    # 💾 Сохраняем таблицу в Excel
-                    df.to_excel(writer, sheet_name=table_name, index=False)
+                            # нормализация топлива
+                            df["fuel_norm"] = df["Топливо"].astype(str).str.lower().str.strip()
 
-                except Exception as e:
-                    print(f"⚠️ Не удалось выгрузить таблицу {table_name}: {e}")
+                            df["fuel_norm"] = df["fuel_norm"].replace({
+                                "газ": "gaz",
+                                "gas": "gaz",
+                                "бензин": "benzin",
+                                "petrol": "benzin",
+                                "gasoline": "benzin"
+                            })
 
-        conn.close()
+                            # нормализация оплаты
+                            df["pay_norm"] = df["Оплата"].astype(str).str.lower().str.strip()
 
-        with open(excel_path, "rb") as f:
-            bot.send_document(
-                message.chat.id,
-                InputFile(f),
-                caption=f"📊 Экспорт из базы cars.db ({date_str})",
-                timeout=300
-            )
+                            df.loc[df["pay_norm"].str.contains("карта|💳", na=False), "pay_norm"] = "card"
+                            df.loc[df["pay_norm"].str.contains("нал|💵", na=False), "pay_norm"] = "cash"
+
+                            # подготовка fuel таблицы
+                            fuel_df["fuel_type"] = fuel_df["fuel_type"].str.lower()
+                            fuel_df["payment_method"] = fuel_df["payment_method"].str.lower()
+
+                            fuel_df["bonuses"] = (
+                                fuel_df["bonuses"]
+                                .astype(str)
+                                .str.replace(",", ".")
+                                .astype(float)
+                            )
+
+                            # merge
+                            df = df.merge(
+                                fuel_df,
+                                how="left",
+                                left_on=["fuel_norm", "pay_norm"],
+                                right_on=["fuel_type", "payment_method"]
+                            )
+
+                            # расчёт баллов
+                            df["Баллы"] = (df["Литры"].astype(float) * df["bonuses"]).round(2)
+
+                            df["Баллы"] = df["Баллы"].fillna(0)
+
+                            df.drop(
+                                columns=[
+                                    "fuel_norm",
+                                    "pay_norm",
+                                    "fuel_type",
+                                    "payment_method",
+                                    "bonuses"
+                                ],
+                                inplace=True,
+                                errors="ignore"
+                            )
+
+                        # запись листа
+                        df.to_excel(writer, sheet_name=table_name, index=False)
+
+                    except Exception as e:
+                        print(f"⚠️ Ошибка экспорта таблицы {table_name}: {e}")
+
+        # размер файла
+        size = os.path.getsize(excel_path) / (1024 * 1024)
+        print("Excel size:", round(size, 2), "MB")
+
+        # отправка файла (с повтором)
+        for attempt in range(3):
+            try:
+
+                with open(excel_path, "rb") as f:
+
+                    bot.send_document(
+                        message.chat.id,
+                        InputFile(f),
+                        caption=f"📊 Экспорт из базы cars.db ({date_str})",
+                        timeout=300
+                    )
+
+                break
+
+            except Exception as send_error:
+
+                if attempt == 2:
+                    raise send_error
 
         os.remove(excel_path)
+
         bot.send_message(message.chat.id, "✅ Экспорт успешно выполнен.")
 
     except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка при экспорте: {e}")
+
+        bot.send_message(
+            message.chat.id,
+            f"❌ Ошибка при экспорте:\n{e}"
+        )
 
 months = {
     '01': 'Январь', '02': 'Февраль', '03': 'Март',
