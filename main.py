@@ -50,7 +50,7 @@ import os
 # --- НАСТРОЙКИ ---
 API_TOKEN = os.getenv("BOT_TOKEN")
 
-bot = telebot.TeleBot(API_TOKEN)
+bot = telebot.TeleBot(API_TOKEN, timeout = 120)
 ADMIN_ID = [6040726738, 5035760364 ]  # <-- ЗАМЕНИ на свой Telegram ID
 #
 ADMIN_ID2 = 6040726738
@@ -347,6 +347,7 @@ def setup_tables():
     """)
     conn.commit()
     conn.close()
+from telebot.types import InputFile
 @bot.message_handler(commands=["export"])
 def export_to_excel(message):
     if message.from_user.id != DAN_TELEGRAM_ID:
@@ -427,9 +428,13 @@ def export_to_excel(message):
 
         conn.close()
 
-        # Отправляем файл в Telegram
         with open(excel_path, "rb") as f:
-            bot.send_document(message.chat.id, f, caption=f"📊 Экспорт из базы cars.db ({date_str})")
+            bot.send_document(
+                message.chat.id,
+                InputFile(f),
+                caption=f"📊 Экспорт из базы cars.db ({date_str})",
+                timeout=300
+            )
 
         os.remove(excel_path)
         bot.send_message(message.chat.id, "✅ Экспорт успешно выполнен.")
