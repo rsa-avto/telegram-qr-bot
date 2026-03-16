@@ -356,16 +356,23 @@ import pandas as pd
 from flask import Flask, send_from_directory  # для отдачи файлов через HTTP
 
 # --- Настройки ---
-EXPORT_DIR = "exports"  # папка для временных файлов
-os.makedirs(EXPORT_DIR, exist_ok=True)
+from flask import Flask, send_from_directory
+import os
 
-app = Flask(__name__)  # если ещё нет веб-сервера, создаём
+app = Flask(__name__)
 
-# --- Flask маршрут для скачивания ---
+# Абсолютный путь к папке с Excel/ZIP
+EXPORT_DIR = r"C:\Users\New\telegram-qr-bot\exports"
+os.makedirs(EXPORT_DIR, exist_ok=True)  # создаёт папку, если её нет
+
 @app.route("/downloads/<filename>")
 def download_file(filename):
+    file_path = os.path.join(EXPORT_DIR, filename)
+    if not os.path.exists(file_path):
+        return "❌ Файл не найден", 404
     return send_from_directory(EXPORT_DIR, filename, as_attachment=True)
 
+    
 # --- Хендлер Telegram ---
 @bot.message_handler(commands=["export"])
 def export_to_excel(message):
@@ -15399,7 +15406,7 @@ def start_scheduler():
 
 def main():
     bot.remove_webhook()
-
+    app.run(host="0.0.0.0", port=5000, debug=True)
     signal.signal(signal.SIGINT, shutdown_scheduler)
     signal.signal(signal.SIGTERM, shutdown_scheduler)
 
