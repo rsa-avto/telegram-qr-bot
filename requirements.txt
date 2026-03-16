@@ -10,3 +10,4 @@ pytesseract
 openpyxl
 pandas
 xlsxwriter
+certifi
