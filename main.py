@@ -347,6 +347,13 @@ def setup_tables():
     """)
     conn.commit()
     conn.close()
+import os
+import sqlite3
+import pandas as pd
+import zipfile
+import time
+from datetime import datetime
+from telebot.types import InputFile   
 @bot.message_handler(commands=["export"])
 def export_to_excel(message):
 
