@@ -15406,7 +15406,6 @@ def start_scheduler():
 
 def main():
     bot.remove_webhook()
-    app.run(host="0.0.0.0", port=5000, debug=True)
     signal.signal(signal.SIGINT, shutdown_scheduler)
     signal.signal(signal.SIGTERM, shutdown_scheduler)
 
