@@ -348,20 +348,25 @@ def setup_tables():
     conn.commit()
     conn.close()
 import os
-import sqlite3
-import pandas as pd
-import zipfile
-import time
-from datetime import datetime
-from telebot.types import InputFile   
-import os
 import time
 import zipfile
 import sqlite3
 from datetime import datetime
 import pandas as pd
-from telebot import types
+from flask import Flask, send_from_directory  # для отдачи файлов через HTTP
 
+# --- Настройки ---
+EXPORT_DIR = "exports"  # папка для временных файлов
+os.makedirs(EXPORT_DIR, exist_ok=True)
+
+app = Flask(__name__)  # если ещё нет веб-сервера, создаём
+
+# --- Flask маршрут для скачивания ---
+@app.route("/downloads/<filename>")
+def download_file(filename):
+    return send_from_directory(EXPORT_DIR, filename, as_attachment=True)
+
+# --- Хендлер Telegram ---
 @bot.message_handler(commands=["export"])
 def export_to_excel(message):
     if message.from_user.id != DAN_TELEGRAM_ID:
@@ -377,7 +382,9 @@ def export_to_excel(message):
             return
 
         date_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        excel_path = f"cars_export_{date_str}.xlsx"
+        excel_filename = f"cars_export_{date_str}.xlsx"
+        excel_path = os.path.join(EXPORT_DIR, excel_filename)
+
         tables_to_export = ["users", "operators", "fuel", "shifts", "history"]
 
         with sqlite3.connect(db_path) as conn, \
@@ -391,54 +398,41 @@ def export_to_excel(message):
                 try:
                     df = pd.read_sql(f"SELECT * FROM {table_name}", conn)
 
-                    # --- обработка history ---
                     if table_name == "history":
                         fuel_df = pd.read_sql("SELECT * FROM fuel", conn)
                         users_df = pd.read_sql("SELECT telegram_id, phone FROM users", conn)
 
-                        df = df.merge(
-                            users_df,
-                            how="left",
-                            left_on="Telegram_ID",
-                            right_on="telegram_id"
-                        )
-
+                        df = df.merge(users_df, how="left",
+                                      left_on="Telegram_ID", right_on="telegram_id")
                         df.rename(columns={"phone": "Телефон"}, inplace=True)
                         df.drop(columns=["telegram_id"], inplace=True, errors="ignore")
 
-                        # нормализация топлива
                         df["fuel_norm"] = df["Топливо"].astype(str).str.lower().str.strip()
                         df["fuel_norm"] = df["fuel_norm"].replace({
-                            "газ": "gaz",
-                            "gas": "gaz",
-                            "бензин": "benzin",
-                            "petrol": "benzin",
-                            "gasoline": "benzin"
+                            "газ": "gaz", "gas": "gaz",
+                            "бензин": "benzin", "petrol": "benzin", "gasoline": "benzin"
                         })
 
-                        # нормализация оплаты
                         df["pay_norm"] = df["Оплата"].astype(str).str.lower().str.strip()
                         df.loc[df["pay_norm"].str.contains("карта|💳", na=False), "pay_norm"] = "card"
                         df.loc[df["pay_norm"].str.contains("нал|💵", na=False), "pay_norm"] = "cash"
 
-                        # подготовка fuel_df
                         fuel_df["fuel_type"] = fuel_df["fuel_type"].str.lower()
                         fuel_df["payment_method"] = fuel_df["payment_method"].str.lower()
-                        fuel_df["bonuses"] = pd.to_numeric(fuel_df["bonuses"].astype(str).str.replace(",", "."), errors='coerce').fillna(0)
+                        fuel_df["bonuses"] = pd.to_numeric(
+                            fuel_df["bonuses"].astype(str).str.replace(",", "."),
+                            errors='coerce'
+                        ).fillna(0)
 
-                        # merge для расчета баллов
-                        df = df.merge(
-                            fuel_df,
-                            how="left",
-                            left_on=["fuel_norm", "pay_norm"],
-                            right_on=["fuel_type", "payment_method"]
-                        )
+                        df = df.merge(fuel_df, how="left",
+                                      left_on=["fuel_norm", "pay_norm"],
+                                      right_on=["fuel_type", "payment_method"])
 
                         df["Литры"] = pd.to_numeric(df["Литры"], errors='coerce').fillna(0)
                         df["Баллы"] = (df["Литры"] * df["bonuses"]).round(2).fillna(0)
 
-                        df.drop(columns=["fuel_norm", "pay_norm", "fuel_type", "payment_method", "bonuses"],
-                                inplace=True, errors="ignore")
+                        df.drop(columns=["fuel_norm", "pay_norm", "fuel_type",
+                                         "payment_method", "bonuses"], inplace=True, errors="ignore")
 
                     df.to_excel(writer, sheet_name=table_name, index=False)
 
@@ -447,41 +441,27 @@ def export_to_excel(message):
 
         # --- проверка размера ---
         size_mb = os.path.getsize(excel_path) / (1024 * 1024)
-        bot.send_message(message.chat.id, f"📦 Excel сформирован\nРазмер файла: {round(size_mb,2)} MB")
 
         # --- если файл большой -> ZIP ---
         if size_mb > 10:
-            zip_path = excel_path.replace(".xlsx", ".zip")
+            zip_filename = excel_filename.replace(".xlsx", ".zip")
+            zip_path = os.path.join(EXPORT_DIR, zip_filename)
             with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
-                z.write(excel_path, arcname=os.path.basename(excel_path))
+                z.write(excel_path, arcname=excel_filename)
             os.remove(excel_path)
-            excel_path = zip_path
-            size_mb = os.path.getsize(excel_path) / (1024 * 1024)
-            bot.send_message(message.chat.id, f"📦 Файл сжат в ZIP\nНовый размер: {round(size_mb,2)} MB")
+            file_to_send = zip_filename
+        else:
+            file_to_send = excel_filename
 
-        # --- отправка файла с retry ---
-        for attempt in range(3):
-            try:
-                with open(excel_path, "rb") as f:
-                    bot.send_document(
-                        message.chat.id,
-                        f,
-                        caption=f"📊 Экспорт из базы cars.db ({date_str})",
-                        timeout=600  # увеличенный таймаут
-                    )
-                break
-            except Exception as send_error:
-                print(f"❌ Попытка {attempt+1} отправки файла не удалась: {send_error}")
-                time.sleep(5)
-                if attempt == 2:
-                    bot.send_message(
-                        message.chat.id,
-                        f"❌ Ошибка отправки файла\nРазмер файла: {round(size_mb,2)} MB\nОшибка: {send_error}"
-                    )
-                    raise send_error
+        # --- формируем ссылку на скачивание ---
+        host = "https://your-server.com"  # замените на ваш домен или IP
+        download_link = f"{host}/downloads/{file_to_send}"
 
-        os.remove(excel_path)
-        bot.send_message(message.chat.id, "✅ Экспорт успешно выполнен.")
+        bot.send_message(
+            message.chat.id,
+            f"📦 Экспорт готов!\nРазмер файла: {round(size_mb,2)} MB\n"
+            f"Скачать файл можно по ссылке:\n{download_link}"
+        )
 
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка при экспорте:\n{e}")
