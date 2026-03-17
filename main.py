@@ -399,7 +399,6 @@ def export_to_excel(message):
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка:\n{e}")
 
-bot.polling()
 
 months = {
     '01': 'Январь', '02': 'Февраль', '03': 'Март',
