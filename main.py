@@ -349,90 +349,50 @@ def setup_tables():
     conn.close()
 
 
-def send_table(message, table_name, order_by=None, limit=15):
-    if message.from_user.id != DAN_TELEGRAM_ID:
-        bot.reply_to(message, "⛔ У вас нет доступа.")
-        return
+import sqlite3
+import pandas as pd
+from datetime import datetime
+import os
 
-    try:
-        conn = sqlite3.connect("cars.db")
-        cursor = conn.cursor()
+# 📁 КУДА СОХРАНЯТЬ (можешь поменять путь)
+SAVE_FOLDER = os.path.join(os.path.expanduser("~"), "Desktop")  
+# например: Desktop (Рабочий стол)
 
-        query = f'SELECT * FROM "{table_name}"'
-        if order_by:
-            query += f' ORDER BY "{order_by}" DESC'
+# имя файла
+date_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
+excel_path = os.path.join(SAVE_FOLDER, f"cars_export_{date_str}.xlsx")
 
-        cursor.execute(query)
-        rows = cursor.fetchall()
+# подключение к базе
+conn = sqlite3.connect("cars.db")
 
-        if not rows:
-            bot.send_message(message.chat.id, f"📭 Таблица {table_name} пуста")
-            return
+tables = [
+    "users", "fuel", "bookings", "bookings_taxi",
+    "bookings_wash", "repair_bookings",
+    "cars", "rental_history", "history",
+    "operators", "shifts", "questions", "feedback"
+]
 
-        columns = [desc[0] for desc in cursor.description]
+with pd.ExcelWriter(excel_path) as writer:
+    for table in tables:
+        try:
+            df = pd.read_sql(f'SELECT * FROM "{table}"', conn)
 
-        text = f"📊 <b>{table_name.upper()}</b>\n\n"
+            # 🔽 сортировка (сначала новые)
+            if "Дата" in df.columns:
+                df = df.sort_values(by="Дата", ascending=False)
+            elif "created_at" in df.columns:
+                df = df.sort_values(by="created_at", ascending=False)
+            elif "id" in df.columns:
+                df = df.sort_values(by="id", ascending=False)
 
-        for row in rows[:limit]:
-            for col, val in zip(columns, row):
-                text += f"<b>{col}:</b> {val}\n"
-            text += "──────────────\n"
+            df.to_excel(writer, sheet_name=table, index=False)
 
-        bot.send_message(message.chat.id, text[:4000], parse_mode="HTML")
+        except Exception as e:
+            print(f"⚠️ Ошибка в таблице {table}: {e}")
 
-        conn.close()
+conn.close()
 
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
-
-
-# 🚀 Команды
-
-@bot.message_handler(commands=["users"])
-def get_users(message):
-    send_table(message, "users", order_by="id")
-
-
-@bot.message_handler(commands=["history"])
-def get_history(message):
-    send_table(message, "history", order_by="Дата")
-
-
-@bot.message_handler(commands=["cars"])
-def get_cars(message):
-    send_table(message, "cars", order_by="car_id")
-
-
-@bot.message_handler(commands=["bookings"])
-def get_bookings(message):
-    send_table(message, "bookings", order_by="created_at")
-
-
-@bot.message_handler(commands=["repair"])
-def get_repair(message):
-    send_table(message, "repair_bookings", order_by="created_at")
-
-
-@bot.message_handler(commands=["wash"])
-def get_wash(message):
-    send_table(message, "bookings_wash", order_by="id")
-
-
-@bot.message_handler(commands=["fuel"])
-def get_fuel(message):
-    send_table(message, "fuel", order_by="id")
-
-
-@bot.message_handler(commands=["operators"])
-def get_operators(message):
-    send_table(message, "operators", order_by="id")
-
-
-@bot.message_handler(commands=["shifts"])
-def get_shifts(message):
-    send_table(message, "shifts", order_by="start_time")
-
-
+print(f"✅ Файл сохранён: {excel_path}")
 
 
 
