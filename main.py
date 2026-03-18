@@ -348,128 +348,89 @@ def setup_tables():
     conn.commit()
     conn.close()
 
-
 import sqlite3
 import pandas as pd
 from datetime import datetime
-import os
+import smtplib
+from email.message import EmailMessage
+from telebot import TeleBot
 
-# 📁 КУДА СОХРАНЯТЬ (можешь поменять путь)
-SAVE_FOLDER = os.path.join(os.path.expanduser("~"), "Desktop")  
-# например: Desktop (Рабочий стол)
+EMAIL = "dan.company2211@yandex.ru"         # твоя Яндекс почта
+PASSWORD = "gsumryrjtqfystvx" # пароль приложения
+TO_EMAIL = "dan.company2211@gmail.com" # куда отправлять Excel
 
-# имя файла
-date_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
-excel_path = os.path.join(SAVE_FOLDER, f"cars_export_{date_str}.xlsx")
+# =========================
+# 🔹 Функция создания и отправки Excel
+# =========================
+def export_and_send():
+    SAVE_FOLDER = "."  # сохраняем рядом с ботом
+    date_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    excel_path = f"cars_export_{date_str}.xlsx"
 
-# подключение к базе
-conn = sqlite3.connect("cars.db")
+    conn = sqlite3.connect("cars.db")
+    tables = [
+        "users", "fuel", "bookings", "bookings_taxi",
+        "bookings_wash", "repair_bookings",
+        "cars", "rental_history", "history",
+        "operators", "shifts"
+    ]
 
-tables = [
-    "users", "fuel", "bookings", "bookings_taxi",
-    "bookings_wash", "repair_bookings",
-    "cars", "rental_history", "history",
-    "operators", "shifts", "questions", "feedback"
-]
+    with pd.ExcelWriter(excel_path) as writer:
+        for table in tables:
+            try:
+                df = pd.read_sql(f'SELECT * FROM "{table}"', conn)
+                # сортировка по дате или id
+                if "Дата" in df.columns:
+                    df = df.sort_values(by="Дата", ascending=False)
+                elif "created_at" in df.columns:
+                    df = df.sort_values(by="created_at", ascending=False)
+                elif "id" in df.columns:
+                    df = df.sort_values(by="id", ascending=False)
 
-with pd.ExcelWriter(excel_path) as writer:
-    for table in tables:
-        try:
-            df = pd.read_sql(f'SELECT * FROM "{table}"', conn)
+                df.to_excel(writer, sheet_name=table, index=False)
+            except Exception as e:
+                print(f"⚠️ Ошибка в таблице {table}: {e}")
 
-            # 🔽 сортировка (сначала новые)
-            if "Дата" in df.columns:
-                df = df.sort_values(by="Дата", ascending=False)
-            elif "created_at" in df.columns:
-                df = df.sort_values(by="created_at", ascending=False)
-            elif "id" in df.columns:
-                df = df.sort_values(by="id", ascending=False)
+    conn.close()
+    print(f"✅ Excel создан: {excel_path}")
 
-            df.to_excel(writer, sheet_name=table, index=False)
+    # отправка на почту
+    msg = EmailMessage()
+    msg["Subject"] = "📊 Экспорт базы cars.db"
+    msg["From"] = EMAIL
+    msg["To"] = TO_EMAIL
+    msg.set_content("Во вложении Excel файл с таблицами.")
 
-        except Exception as e:
-            print(f"⚠️ Ошибка в таблице {table}: {e}")
-
-conn.close()
-
-print(f"✅ Файл сохранён: {excel_path}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import os
-import time
-import zipfile
-import sqlite3
-from datetime import datetime
-import pandas as pd
-from flask import Flask, send_from_directory  # для отдачи файлов через HTTP
-
-# --- Настройки ---
-from flask import Flask, send_from_directory
-import os
-
-EXPORT_DIR = r"C:\Users\New\telegram-qr-bot\exports"
-os.makedirs(EXPORT_DIR, exist_ok=True)
-
-
-
-
-
-
-
-
-@bot.message_handler(commands=["export"])
-def export_to_excel(message):
-    if message.from_user.id != DAN_TELEGRAM_ID:
-        bot.reply_to(message, "⛔ Нет доступа")
-        return
-
-    try:
-        bot.send_message(message.chat.id, "📦 Формирую Excel...")
-
-        db_path = "cars.db"
-        if not os.path.exists(db_path):
-            bot.send_message(message.chat.id, "❌ Нет базы")
-            return
-
-        date_str = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        filename = f"cars_export_{date_str}.xlsx"
-        file_path = os.path.join(EXPORT_DIR, filename)
-
-        with sqlite3.connect(db_path) as conn:
-            df = pd.read_sql("SELECT * FROM users", conn)  # для теста
-            df.to_excel(file_path, index=False)
-
-        size = os.path.getsize(file_path) / (1024 * 1024)
-
-        # ⚠️ ВАЖНО: ставь свой IP!
-        host = "http://127.0.0.1:5000"
-
-        link = f"{host}/downloads/{filename}"
-
-        bot.send_message(
-            message.chat.id,
-            f"✅ Готово!\nРазмер: {round(size,2)} MB\n\n📥 Скачать:\n{link}"
+    with open(excel_path, "rb") as f:
+        msg.add_attachment(
+            f.read(),
+            maintype="application",
+            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=excel_path
         )
 
+    with smtplib.SMTP_SSL("smtp.yandex.com", 465) as smtp:
+        smtp.login(EMAIL, PASSWORD)
+        smtp.send_message(msg)
+
+    print(f"📩 Файл отправлен на почту: {TO_EMAIL}")
+    return excel_path
+
+# =========================
+# 🔹 Команда в Telegram
+# =========================
+@bot.message_handler(commands=["export"])
+def handle_export(message):
+    if message.from_user.id != DAN_TELEGRAM_ID:
+        bot.reply_to(message, "⛔ У вас нет доступа к этой команде.")
+        return
+
+    bot.send_message(message.chat.id, "⏳ Создаю Excel и отправляю на почту...")
+    try:
+        excel_path = export_and_send()
+        bot.send_message(message.chat.id, f"✅ Готово! Файл отправлен на почту: {TO_EMAIL}")
     except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка:\n{e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
 
 
 months = {
