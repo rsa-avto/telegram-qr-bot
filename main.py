@@ -356,7 +356,7 @@ from email.message import EmailMessage
 from telebot import TeleBot
 
 EMAIL = "dan.company2211@yandex.ru"         # твоя Яндекс почта
-PASSWORD = "gsumryrjtqfystvx" # пароль приложения
+PASSWORD = "loxxxhtruulhmsyb" # пароль приложения
 TO_EMAIL = "dan.company2211@gmail.com" # куда отправлять Excel
 
 # =========================
