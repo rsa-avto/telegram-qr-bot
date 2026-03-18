@@ -347,6 +347,111 @@ def setup_tables():
     """)
     conn.commit()
     conn.close()
+
+
+def send_table(message, table_name, order_by=None, limit=15):
+    if message.from_user.id != DAN_TELEGRAM_ID:
+        bot.reply_to(message, "⛔ У вас нет доступа.")
+        return
+
+    try:
+        conn = sqlite3.connect("cars.db")
+        cursor = conn.cursor()
+
+        query = f'SELECT * FROM "{table_name}"'
+        if order_by:
+            query += f' ORDER BY "{order_by}" DESC'
+
+        cursor.execute(query)
+        rows = cursor.fetchall()
+
+        if not rows:
+            bot.send_message(message.chat.id, f"📭 Таблица {table_name} пуста")
+            return
+
+        columns = [desc[0] for desc in cursor.description]
+
+        text = f"📊 <b>{table_name.upper()}</b>\n\n"
+
+        for row in rows[:limit]:
+            for col, val in zip(columns, row):
+                text += f"<b>{col}:</b> {val}\n"
+            text += "──────────────\n"
+
+        bot.send_message(message.chat.id, text[:4000], parse_mode="HTML")
+
+        conn.close()
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
+
+
+# 🚀 Команды
+
+@bot.message_handler(commands=["users"])
+def get_users(message):
+    send_table(message, "users", order_by="id")
+
+
+@bot.message_handler(commands=["history"])
+def get_history(message):
+    send_table(message, "history", order_by="Дата")
+
+
+@bot.message_handler(commands=["cars"])
+def get_cars(message):
+    send_table(message, "cars", order_by="car_id")
+
+
+@bot.message_handler(commands=["bookings"])
+def get_bookings(message):
+    send_table(message, "bookings", order_by="created_at")
+
+
+@bot.message_handler(commands=["repair"])
+def get_repair(message):
+    send_table(message, "repair_bookings", order_by="created_at")
+
+
+@bot.message_handler(commands=["wash"])
+def get_wash(message):
+    send_table(message, "bookings_wash", order_by="id")
+
+
+@bot.message_handler(commands=["fuel"])
+def get_fuel(message):
+    send_table(message, "fuel", order_by="id")
+
+
+@bot.message_handler(commands=["operators"])
+def get_operators(message):
+    send_table(message, "operators", order_by="id")
+
+
+@bot.message_handler(commands=["shifts"])
+def get_shifts(message):
+    send_table(message, "shifts", order_by="start_time")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import os
 import time
 import zipfile
@@ -361,6 +466,13 @@ import os
 
 EXPORT_DIR = r"C:\Users\New\telegram-qr-bot\exports"
 os.makedirs(EXPORT_DIR, exist_ok=True)
+
+
+
+
+
+
+
 
 @bot.message_handler(commands=["export"])
 def export_to_excel(message):
