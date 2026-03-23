@@ -8,7 +8,7 @@ import os
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 
-DB_PATH = "cars.db"
+DB_PATH = "cars_new.db"
 BASE_URL = "192.168.1.182"  # IP/домен, где работает Flask
 
 user_sessions = {}
