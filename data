@@ -1,0 +1,3288 @@
+6419852337:AAHQGZagCRReSMWwCEFdX5BVEn7IZHEbxVk
+192.168.1.182
+5035760364
+app.py
+
+
+
+
+
+
+@app.route("/operator/accept_payment/<int:order_id>", methods=["GET", "POST"])
+def operator_accept_payment(order_id):
+    if session.get("role") != "operator":
+        return "❌ Нет доступа", 403
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute('SELECT * FROM history WHERE "№"=?', (order_id,))
+    order = cur.fetchone()
+
+    if not order:
+        conn.close()
+        return "❌ Заказ не найден"
+
+    if request.method == "POST":
+        # Просто подтверждаем оплату (не меняем cash/card/bonus)
+        cur.execute("""
+            UPDATE history
+            SET status='done'
+            WHERE "№"=?
+        """, (order_id,))
+
+        # Отправляем уведомление пользователю
+        cur.execute("""
+            INSERT INTO notifications (
+                telegram_id, message, type, order_id, fuel, litres, amount_rub, points, payment_method
+            ) VALUES (?, ?, 'order_done', ?, ?, ?, ?, ?, ?)
+        """, (
+            order["Telegram_ID"],
+            f"Оплата подтверждена оператором",
+            order_id,
+            order["Топливо"],
+            order["Литры"],
+            order["Рубли"],
+            0,
+            order["Оплата"]   # <- оставляем старый способ оплаты без изменений
+        ))
+
+        conn.commit()
+        conn.close()
+
+        # Редирект на done_order
+        return redirect(f"/operator/done_order/{order_id}")
+
+    conn.close()
+    return render_template("operator_accept_payment.html", order=order)
+
+
+
+
+@app.route("/confirmed_analog/<int:order_id>", methods=["GET", "POST"])
+def confirmed_analog(order_id):
+    if "telegram_id" not in session:
+        return redirect("/")
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Получаем заказ
+    cur.execute('SELECT * FROM history WHERE "№"=?', (order_id,))
+    order = cur.fetchone()
+    if not order:
+        conn.close()
+        return "❌ Заказ не найден"
+
+    # Цена топлива
+    cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type=?", (order["Топливо"],))
+    fuel_row = cur.fetchone()
+    price_per_litre = fuel_row["price_per_litre"] if fuel_row else 0
+
+    litres = order["Литры"] or 0
+    rub = round(litres * price_per_litre, 2)
+
+    # Имя станции
+    station_name = STATION_NAMES.get(order["Адрес"], order["Адрес"])
+
+    # Баланс пользователя
+    cur.execute("SELECT bonus FROM users WHERE telegram_id=?", (session["telegram_id"],))
+    user = cur.fetchone()
+    user_bonus = user["bonus"] if user else 0
+
+    if request.method == "POST":
+        payment = request.form.get("payment_method")
+
+        if payment == "bonus":
+            # Оплата бонусами сразу
+            cur.execute("""
+                UPDATE history
+                SET Оплата='bonus', status='done', Рубли=?, points=0
+                WHERE "№"=?
+            """, (rub, order_id))
+
+            # Уведомление оператору о бонусной оплате
+            operator_telegram_id = STATION_OPERATORS.get(station_name)
+            cur.execute("""
+                INSERT INTO notifications (telegram_id, message, type, order_id)
+                VALUES (?, ?, 'bonus_paid', ?)
+            """, (
+                operator_telegram_id,
+                f"Пользователь оплатил заказ #{order_id} бонусами",
+                order_id
+            ))
+
+            conn.commit()
+            conn.close()
+            return redirect(f"/order_success_analog/{order_id}")
+
+        else:
+            # Обычная оплата (cash/card)
+            cur.execute("""
+                UPDATE history
+                SET Оплата=?, status='waiting_operator_confirm'
+                WHERE "№"=?
+            """, (payment, order_id))
+
+            # Уведомление оператору о выборе способа оплаты
+            operator_telegram_id = STATION_OPERATORS.get(station_name)
+            cur.execute("""
+                INSERT INTO notifications (telegram_id, message, type, order_id)
+                VALUES (?, ?, 'waiting_payment', ?)
+            """, (
+                operator_telegram_id,
+                f"Клиент выбрал способ оплаты: {payment} для заказа #{order_id}",
+                order_id
+            ))
+
+            conn.commit()
+            conn.close()
+            return redirect(f"/pay_order/{order_id}")
+
+    conn.close()
+    return render_template(
+        "confirmed_analog.html",
+        order=order,
+        rub=rub,
+        station_name=station_name,
+        user_bonus=user_bonus
+    )
+
+
+
+
+
+
+from flask import Flask, session, redirect, request, render_template, flash
+import sqlite3
+import os
+from flask import send_file
+import pandas as pd
+import io
+import sqlite3
+app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", "dev-key")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "cars.db")
+
+STATION_NAMES = {
+    "station_1": "Южное шоссе 129",
+    "station_2": "Южное шоссе 12/2",
+    "station_3": "Лесная 66А",
+    "station_4": "Борковская 72/1"
+}
+STATION_OPERATORS = {
+    "Южное шоссе 129": 5035760364,
+    "Южное шоссе 12/2": 6497856987,
+    "Лесная 66А": 31313131231,
+    "Борковская 72/1": 4674574545
+}
+ADMIN_IDS = [755909251]  # Сюда вставить ID админа Telegram
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+@app.route("/")
+def index():
+    if "user_id" in session:
+        return redirect("/dashboard")
+    return "🌐 Войдите через Telegram (/login?telegram_id=YOUR_TELEGRAM_ID)"
+
+
+@app.route("/login")
+def login():
+    telegram_id = request.args.get("telegram_id")
+    if not telegram_id:
+        return "❌ Telegram ID не указан", 400
+
+    telegram_id_int = int(telegram_id)
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM shifts WHERE active = 1 LIMIT 1")
+    active_shift = cur.fetchone()
+
+    if active_shift:
+        print("✅ Есть активные смены")
+    else:
+        print("❌ Нет активных смен")
+    # Проверяем пользователя
+    cur.execute("SELECT id FROM users WHERE telegram_id = ?", (telegram_id_int,))
+    user = cur.fetchone()
+
+    # 👉 ищем операторов в БД (а не в словаре!)
+    cur.execute("SELECT id FROM operators WHERE telegram_id = ?", (telegram_id_int,))
+    ops = cur.fetchall()
+
+    if not user and not ops:
+        conn.close()
+        return "❌ Нет доступа", 403
+
+    session["telegram_id"] = telegram_id_int
+    session["is_admin"] = telegram_id_int in ADMIN_IDS
+
+    # 👉 если есть операторы → выбор
+    if ops:
+        session["pending_operator"] = telegram_id_int
+        conn.close()
+        return redirect("/operator/login")
+
+    # 👉 если обычный пользователь
+    session["role"] = "user"
+    session["user_id"] = user["id"] if user else None
+
+    conn.close()
+    return redirect("/dashboard")
+
+@app.route("/operator/login", methods=["GET", "POST"])
+def operator_login():
+    if "pending_operator" not in session:
+        return redirect("/")
+
+    telegram_id = session["pending_operator"]
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # получаем всех операторов с этим telegram_id
+    cur.execute("SELECT id, name, station FROM operators WHERE telegram_id = ?", (telegram_id,))
+    operators = cur.fetchall()
+
+    if request.method == "POST":
+        operator_id = request.form.get("operator_id")
+
+        cur.execute("SELECT * FROM operators WHERE id = ?", (operator_id,))
+        op = cur.fetchone()
+        conn.close()
+
+        if not op:
+            return "❌ Оператор не найден"
+
+        # логиним
+        session.pop("pending_operator")
+        session["telegram_id"] = telegram_id
+        session["role"] = "operator"
+        session["operator_id"] = op["id"]
+        session["station"] = op["station"]
+
+        return redirect("/operator")
+
+    conn.close()
+
+    return render_template("operator_login.html", operators=operators)
+
+@app.route("/dashboard", methods=["GET", "POST"])
+def dashboard():
+    if "telegram_id" not in session:
+        return redirect("/")
+
+    role = session.get("role")
+
+    # 👉 ОПЕРАТОР
+    if role == "operator":
+        conn = get_db()
+        cur = conn.cursor()
+
+        cur.execute(
+            "SELECT * FROM history WHERE Адрес = ? ORDER BY Дата DESC LIMIT 20",
+            (session["station"],)
+        )
+        orders = cur.fetchall()
+        conn.close()
+
+        return render_template("operator_dashboard.html", orders=orders)
+
+    # 👉 ОБЫЧНЫЙ пользователь (старый код)
+    fuels = ["Бензин", "Газ"]
+
+    if request.method == "POST":
+        station = request.form.get("station")
+
+        conn = get_db()
+        cur = conn.cursor()
+
+        # Проверяем активную смену
+        cur.execute(
+            "SELECT 1 FROM shifts WHERE station = ? AND active = 1",
+            (station,)
+        )
+        active_shift = cur.fetchone()
+        conn.close()
+        if not active_shift:
+            print(1)
+            flash("❌ На этой станции сейчас нет активной смены", "error")
+            return redirect("/dashboard")
+
+        # если смена есть — продолжаем
+        order = {
+            "station": station,
+            "fuel": request.form.get("fuel"),
+            "amount_type": request.form.get("amount_type"),
+            "amount": request.form.get("amount")
+        }
+
+        session["current_order"] = order
+        return redirect("/confirm")
+
+    return render_template(
+        "dashboard.html",
+        stations=STATION_NAMES,
+        fuels=fuels,
+        is_admin=session.get("is_admin", False)
+    )
+
+
+@app.route("/confirm", methods=["GET", "POST"])
+def confirm():
+    if "user_id" not in session or "current_order" not in session:
+        return redirect("/dashboard")
+
+    order = session["current_order"]
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Получаем цену топлива
+    cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ?", (order["fuel"],))
+    row = cur.fetchone()
+
+    price = row["price_per_litre"] if row else 0
+
+    if request.method == "POST":
+        payment = request.form.get("payment_method")
+
+        amount = float(order["amount"])
+
+        if order["amount_type"] == "rub":
+            rub = amount
+            litres = round(amount / price, 2) if price else 0
+        else:
+            litres = amount
+            rub = round(amount * price, 2)
+
+        cur.execute(
+            "INSERT INTO history (Адрес, Топливо, Рубли, Литры, Оплата, Telegram_ID) VALUES (?, ?, ?, ?, ?, ?)",
+            (order["station"], order["fuel"], rub, litres, payment, session["telegram_id"])
+        )
+
+        conn.commit()
+        conn.close()
+
+        flash(f"Заказ: {litres} л / {rub} ₽", "success")
+        session.pop("current_order")
+        return redirect("/dashboard")
+
+    conn.close()
+    station_name = STATION_NAMES.get(order["station"], order["station"])
+
+    return render_template(
+        "confirm.html",
+        order=order,
+        price=price,
+        station_name=station_name
+    )
+
+@app.route("/operator", methods=["GET", "POST"])
+def operator_panel():
+    if session.get("role") != "operator":
+        return "❌ Доступ запрещен", 403
+
+    station = session.get("station")
+    op_id = session.get("operator_id")
+
+
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # получаем оператора
+    cur.execute("SELECT id, name FROM operators WHERE id = ?", (op_id,))
+    operator = cur.fetchone()
+
+    if not operator:
+        conn.close()
+        return "❌ Оператор не найден"
+
+    op_id = operator["id"]
+
+    # проверяем активную смену
+    cur.execute("SELECT * FROM shifts WHERE operator_id = ? AND active = 1", (op_id,))
+    shift = cur.fetchone()
+
+    from datetime import datetime
+
+    # --- НАЧАТЬ СМЕНУ ---
+    if request.method == "POST" and request.form.get("action") == "start":
+        cur.execute(
+            "INSERT INTO shifts (operator_id, station, active, start_time) VALUES (?, ?, 1, ?)",
+            (op_id, station, datetime.now().strftime("%Y-%m-%d %H:%M"))
+        )
+        cur.execute("UPDATE operators SET active=1 WHERE id=?", (op_id,))
+        conn.commit()
+        conn.close()
+        return redirect("/operator")
+
+    # --- ЗАКОНЧИТЬ СМЕНУ ---
+    if request.method == "POST" and request.form.get("action") == "end":
+        end_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+        cur.execute(
+            "UPDATE shifts SET active=0, end_time=? WHERE operator_id=? AND active=1",
+            (end_time, op_id)
+        )
+        cur.execute("UPDATE operators SET active=0 WHERE id=?", (op_id,))
+        conn.commit()
+
+        # сохраняем данные смены в сессию для итоговой страницы
+        session["shift_summary"] = {
+            "station": station,
+            "start_time": shift["start_time"] if shift else "",
+            "end_time": end_time
+        }
+
+        conn.close()
+        return redirect("/operator/summary")
+
+    conn.close()
+    return render_template("operator_panel.html", shift=shift, station=station)
+
+
+@app.route("/operator/summary", methods=["GET", "POST"])
+def operator_summary():
+    if session.get("role") != "operator":
+        return "❌ Доступ запрещен", 403
+
+    summary = session.get("shift_summary")
+    if not summary:
+        return redirect("/operator")  # если данных нет, возвращаемся
+
+    if request.method == "POST":
+        session.pop("shift_summary", None)
+        return redirect("/operator/login")  # возвращаемся на выбор оператора
+
+    return render_template("shift_summary.html", summary=summary)
+
+@app.route("/history")
+def history():
+    if "user_id" not in session:
+        return redirect("/")
+
+    conn = get_db()
+    cur = conn.cursor()
+    if session.get("is_admin"):
+        cur.execute("SELECT * FROM history ORDER BY Дата DESC LIMIT 50")
+    else:
+        cur.execute(
+            "SELECT * FROM history WHERE Telegram_ID = ? ORDER BY Дата DESC LIMIT 20",
+            (session["telegram_id"],)
+        )
+    rows = cur.fetchall()
+    conn.close()
+
+    PAYMENT_NAMES = {
+        "cash": "💵 Наличные",
+        "card": "💳 Карта",
+        "bonus": "🎁 Баллами"
+    }
+
+    formatted_rows = []
+
+    for row in rows:
+        row_dict = dict(row)
+
+        # Станция → нормальное имя
+        station_code = row_dict["Адрес"]
+        row_dict["Адрес"] = STATION_NAMES.get(station_code, station_code)
+
+        # Оплата → русский текст
+        payment_code = row_dict["Оплата"]
+        row_dict["Оплата"] = PAYMENT_NAMES.get(payment_code, payment_code)
+
+        formatted_rows.append(row_dict)
+
+    return render_template(
+        "history.html",
+        rows=formatted_rows,
+        is_admin=session.get("is_admin", False)
+    )
+
+# ====== Админский функционал ======
+
+@app.route("/admin/set_bonus", methods=["GET", "POST"])
+def set_bonus():
+    if not session.get("is_admin", False):
+        return "❌ Доступ запрещен", 403
+
+    fuels = ["Бензин", "Газ"]
+    payments = ["cash", "card"]
+    payments_ru = {"cash": "💵 Наличные", "card": "💳 Карта"}  # русские подписи
+
+    conn = get_db()
+    cur = conn.cursor()
+    # Создаем таблицу бонусов, если нет
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS fuel_bonus (
+            fuel_type TEXT NOT NULL,
+            payment_method TEXT NOT NULL,
+            points_per_litre REAL DEFAULT 0,
+            PRIMARY KEY (fuel_type, payment_method)
+        )
+    ''')
+    conn.commit()
+
+    if request.method == "POST":
+        fuel = request.form.get("fuel")
+        payment = request.form.get("payment_method")
+        points = float(request.form.get("points", 0))
+        cur.execute('''
+            INSERT INTO fuel_bonus (fuel_type, payment_method, points_per_litre)
+            VALUES (?, ?, ?)
+            ON CONFLICT(fuel_type, payment_method) DO UPDATE SET points_per_litre=excluded.points_per_litre
+        ''', (fuel, payment, points))
+        conn.commit()
+        flash(f"Баллы для {fuel} ({payments_ru[payment]}) обновлены: {points} балл/л")
+        return redirect("/dashboard")
+
+    # Текущие значения
+    cur.execute("SELECT * FROM fuel_bonus")
+    rows = cur.fetchall()
+    points = {}
+    for row in rows:
+        if row['fuel_type'] not in points:
+            points[row['fuel_type']] = {}
+        points[row['fuel_type']][row['payment_method']] = row['points_per_litre']
+    conn.close()
+
+    return render_template(
+        "set_bonus.html",
+        fuels=fuels,
+        payments=payments,
+        payments_ru=payments_ru,
+        points=points
+    )
+@app.route("/admin/add_operator", methods=["GET", "POST"])
+def add_operator():
+    if "user_id" not in session:
+        return redirect("/")
+
+    # Проверка на админа через сессию, а не БД
+    if not session.get("is_admin"):
+        return "❌ Доступ запрещен", 403
+
+    if request.method == "POST":
+        name = request.form.get("name")
+        phone = request.form.get("phone")
+        station = request.form.get("station")
+
+        # Получаем Telegram ID по станции
+        telegram_id = STATION_OPERATORS.get(STATION_NAMES.get(station, ""), None)
+        if telegram_id is None:
+            flash(f"Не найден Telegram ID для станции {station}")
+            return redirect("/admin/add_operator")
+
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO operators (name, phone, station, telegram_id) VALUES (?, ?, ?, ?)",
+            (name, phone, station, telegram_id)
+        )
+        conn.commit()
+        conn.close()
+
+        flash(f"Оператор {name} успешно добавлен! Telegram ID: {telegram_id}")
+        return redirect("/dashboard")
+
+    return render_template("add_operator.html", stations=STATION_NAMES)
+
+@app.route("/admin/operators", methods=["GET", "POST"])
+def list_operators():
+    if "user_id" not in session or not session.get("is_admin"):
+        return "❌ Доступ запрещен", 403
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # --- УДАЛЕНИЕ ОПЕРАТОРА ---
+    if request.method == "POST":
+        op_id = request.form.get("operator_id")
+        action = request.form.get("action")
+        if action == "delete":
+            cur.execute("DELETE FROM operators WHERE id = ?", (op_id,))
+            conn.commit()
+
+    # --- ПОЛУЧАЕМ ВСЕХ ОПЕРАТОРОВ ---
+    cur.execute("SELECT * FROM operators")
+    operators = cur.fetchall()  # словари благодаря row_factory
+
+    # --- ПОЛУЧАЕМ ВСЕ АКТИВНЫЕ СМЕНЫ ---
+    cur.execute("SELECT * FROM shifts WHERE active = 1")
+    shifts = cur.fetchall()  # словари
+
+    conn.close()
+
+    return render_template(
+        "operators.html",
+        operators=operators,
+        station_names=STATION_NAMES,
+        shifts=shifts
+    )
+
+
+@app.route("/history/export")
+def export_history():
+    if "user_id" not in session:
+        return redirect("/")
+
+    if not session.get("is_admin"):
+        return "❌ Доступ запрещен", 403
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    df = pd.read_sql_query("SELECT * FROM history ORDER BY Дата DESC", conn)
+    conn.close()
+
+    # --- Справочники ---
+    PAYMENT_NAMES = {
+        "cash": "Наличные",
+        "card": "Карта",
+        "bonus": "Баллами"
+    }
+
+    # --- Преобразования ---
+    if "Адрес" in df.columns:
+        df["Адрес"] = df["Адрес"].map(lambda x: STATION_NAMES.get(x, x))
+
+    if "Оплата" in df.columns:
+        df["Оплата"] = df["Оплата"].map(lambda x: PAYMENT_NAMES.get(x, x))
+
+    # Убираем None → "-"
+    df = df.fillna("-")
+
+    # --- Экспорт ---
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='История')
+
+    output.seek(0)
+
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name="history.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+# --- Изменение цены топлива ---
+@app.route("/admin/set_prices", methods=["GET", "POST"])
+def set_prices():
+    if "user_id" not in session or not session.get("is_admin", False):
+        return "❌ Доступ запрещен", 403
+
+    fuels = ["Бензин", "Газ"]
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT fuel_type, price_per_litre FROM fuel")
+    rows = cur.fetchall()
+    conn.close()
+
+    prices = {row["fuel_type"]: row["price_per_litre"] for row in rows}
+
+    if request.method == "POST":
+        fuel = request.form.get("fuel")
+        price = float(request.form.get("price"))
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("UPDATE fuel SET price_per_litre = ? WHERE fuel_type = ?", (price, fuel))
+        conn.commit()
+        conn.close()
+        flash(f"Цена для {fuel} обновлена: {price} ₽/л")
+        return redirect("/dashboard")
+
+    return render_template("set_prices.html", fuels=fuels, prices=prices)
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/")
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000, debug=True)
+
+
+
+
+
+
+bot.py
+
+
+import telebot
+import uuid
+import sqlite3
+import socket
+from telebot import types
+
+BOT_TOKEN = "6419852337:AAHQGZagCRReSMWwCEFdX5BVEn7IZHEbxVk"
+bot = telebot.TeleBot(BOT_TOKEN)
+
+DB_PATH = "cars.db"
+BASE_URL = "192.168.1.182"  # IP/домен, где работает Flask
+
+user_sessions = {}
+
+# 🔹 Получение локального IP
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except:
+        ip = "127.0.0.1"
+    finally:
+        s.close()
+    return ip
+
+# 🔹 Команда для входа на сайт
+@bot.message_handler(commands=["site"])
+def send_site_link(message):
+    telegram_id = message.from_user.id
+
+    # Проверяем наличие пользователя
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT telegram_id FROM users WHERE telegram_id IS NOT NULL")
+    rows = cur.fetchall()
+
+    for row in rows:
+        print(row[0])
+    cur.execute("SELECT id FROM users WHERE telegram_id = ?", (telegram_id,))
+    user = cur.fetchone()
+    if not user:
+        bot.send_message(message.chat.id, "❌ Вы не зарегистрированы")
+        conn.close()
+        return
+    user_id = user[0]
+
+    # Создаём токен для входа
+    token = str(uuid.uuid4())
+    cur.execute(
+        "INSERT INTO login_tokens (token, user_id) VALUES (?, ?)",
+        (token, user_id)
+    )
+    conn.commit()
+    conn.close()
+
+    link = f"http://{BASE_URL}:10000/login?telegram_id={telegram_id}"
+    bot.send_message(message.chat.id, f"🌐 Войти в личный кабинет:\n{link}")
+
+
+# 🔹 Обработка выбора станции
+@bot.callback_query_handler(func=lambda call: call.data.startswith("station_"))
+def handle_station(call):
+    chat_id = call.message.chat.id
+    station_code = call.data.split("_")[1]
+
+    if chat_id not in user_sessions:
+        user_sessions[chat_id] = {}
+    user_sessions[chat_id]['station'] = station_code
+
+    markup = types.InlineKeyboardMarkup()
+    for fuel in ["Бензин", "Дизель", "Газ"]:
+        markup.add(types.InlineKeyboardButton(fuel, callback_data=f"fuel_{fuel}"))
+
+    bot.send_message(chat_id, f"Вы выбрали станцию {station_code}. Выберите тип топлива:", reply_markup=markup)
+
+
+# 🔹 Обработка выбора топлива
+@bot.callback_query_handler(func=lambda call: call.data.startswith("fuel_"))
+def handle_fuel(call):
+    chat_id = call.message.chat.id
+    fuel_type = call.data.split("_")[1]
+
+    if chat_id not in user_sessions:
+        user_sessions[chat_id] = {}
+    user_sessions[chat_id]['fuel'] = fuel_type
+
+    markup = types.InlineKeyboardMarkup()
+    for amount in [500, 1000, 1500, 2000]:
+        markup.add(types.InlineKeyboardButton(f"{amount} руб.", callback_data=f"sum_{amount}"))
+
+    bot.send_message(chat_id, f"Вы выбрали {fuel_type}. Выберите сумму:", reply_markup=markup)
+
+
+# 🔹 Обработка выбора суммы
+@bot.callback_query_handler(func=lambda call: call.data.startswith("sum_"))
+def handle_sum(call):
+    chat_id = call.message.chat.id
+    amount = int(call.data.split("_")[1])
+
+    if chat_id not in user_sessions:
+        user_sessions[chat_id] = {}
+    user_sessions[chat_id]['amount'] = amount
+
+    session_data = user_sessions[chat_id]
+    station = session_data.get("station", "не выбрано")
+    fuel = session_data.get("fuel", "не выбрано")
+
+    bot.send_message(chat_id, f"✅ Вы выбрали:\nСтанция: {station}\nТопливо: {fuel}\nСумма: {amount} руб.")
+
+
+# 🔹 Запуск polling
+if __name__ == "__main__":
+    print("🤖 Бот запущен")
+    bot.infinity_polling()
+
+
+
+
+
+
+
+
+
+
+main 2.0.py
+
+import time
+import signal
+import sys
+from threading import Thread
+import os
+import sqlite3
+from app import app
+from bot import bot
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Путь к БД
+if os.name == "nt":  # Windows
+    DB_PATH = os.path.join(BASE_DIR, "cars.db")
+else:  # Linux / Docker
+    DB_PATH = "/app/cars.db"
+
+# Подключение к БД
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.execute("PRAGMA foreign_keys = ON")  # включаем поддержку внешних ключей
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def get_db():
+    return sqlite3.connect(DB_PATH)
+
+# Создание таблиц
+def setup_tables():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone TEXT UNIQUE,
+            name TEXT,
+            full_name TEXT,
+            birthday_date TEXT,
+            telegram_id INTEGER UNIQUE,
+            driver_license_photo TEXT,
+            passport_front_photo TEXT,
+            passport_back_photo TEXT,
+            status TEXT DEFAULT 'new',
+            bonus INTEGER DEFAULT 0,
+            purpose TEXT,
+            is_admin INTEGER DEFAULT 0
+        )
+    ''')
+
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS login_tokens (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS history (
+            "№" INTEGER PRIMARY KEY AUTOINCREMENT,
+            "Дата" DATETIME DEFAULT CURRENT_TIMESTAMP,
+            "Адрес" TEXT,
+            "Топливо" TEXT,
+            "Рубли" REAL,
+            "Литры" REAL,
+            "Оплата" TEXT,
+            "Telegram_ID" INTEGER
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS operators (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER,
+            name TEXT,
+            phone TEXT,
+            station TEXT,
+            pin TEXT,
+            registered INTEGER DEFAULT 0,
+            active INTEGER DEFAULT 0
+        )
+    ''')
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS fuel (
+        fuel_type TEXT PRIMARY KEY,
+        price_per_litre REAL
+    )
+    ''')
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS shifts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        operator_id INTEGER,
+        station TEXT,
+        active INTEGER DEFAULT 1,
+        start_time TEXT,
+        end_time TEXT
+        )
+        ''')
+
+    conn.commit()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS fuel_bonus (
+            fuel_type TEXT NOT NULL,
+            payment_method TEXT NOT NULL,
+            points_per_litre REAL DEFAULT 0,
+            PRIMARY KEY (fuel_type, payment_method))''')
+
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS shifts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            operator_id INTEGER,
+            station TEXT,
+            active INTEGER DEFAULT 0,
+            gasoline_liters INTEGER DEFAULT 0,
+            gas_liters INTEGER DEFAULT 0,
+            sales_sum INTEGER DEFAULT 0,
+            bonus_sum REAL DEFAULT 0,
+            cars_sold INTEGER DEFAULT 0,
+            sold_sum INTEGER DEFAULT 0,
+            start_time TEXT,
+            end_time TEXT
+        )
+    ''')
+
+    conn.commit()
+    conn.close()
+
+# Корректное завершение работы
+def shutdown_scheduler(signum, frame):
+    print("🛑 Останавливаем Flask и Telegram-бота...")
+    sys.exit(0)
+
+# Запуск Flask
+def run_flask():
+    app.run(host="0.0.0.0", port=10000)
+
+# Главная функция
+def main():
+    bot.remove_webhook()
+    signal.signal(signal.SIGINT, shutdown_scheduler)
+    signal.signal(signal.SIGTERM, shutdown_scheduler)
+
+    # Запуск Flask в отдельном потоке
+    Thread(target=run_flask, daemon=True).start()
+    print("✅ Flask запущен")
+
+    # Запуск Telegram-бота
+    print("🤖 Telegram-бот запущен")
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=1, timeout=20)
+        except Exception as e:
+            print(f"❌ Ошибка polling: {e}")
+            time.sleep(5)
+
+if __name__ == "__main__":
+    setup_tables()  # создаём таблицы
+    main()
+
+
+
+
+
+
+dashboard.html
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Личный кабинет</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 10px; line-height: 1.5; }
+        h1,h2 { text-align: center; }
+        form { max-width: 400px; margin: 0 auto; background:#f7f7f7; padding:15px; border-radius:10px; }
+        input, select, button { width: 100%; padding:10px; margin:5px 0 15px 0; font-size:16px; border-radius:5px; border:1px solid #ccc; box-sizing:border-box; }
+        button { background-color:#4CAF50; color:white; border:none; }
+        button:hover { background-color:#45a049; }
+        table { width: 100%; border-collapse: collapse; margin-top:20px; }
+        table, th, td { border: 1px solid #ccc; }
+        th, td { padding:10px; text-align:center; }
+        a { text-decoration:none; color:#4CAF50; }
+        a:hover { text-decoration:underline; }
+        @media(max-width:500px) { h1,h2 { font-size:1.5em; } input, select, button { font-size:14px; padding:8px; } }
+    </style>
+</head>
+<body>
+<h1>Добро пожаловать!</h1>
+
+{% if is_admin %}
+<h2>⚙️ Админские действия</h2>
+<p style="text-align:center">
+    <a href="/admin/set_prices"><button>Изменить цены топлива</button></a>
+    <a href="/admin/set_bonus"><button>Изменить баллы за литр</button></a>
+    <a href="/admin/operators"><button>Операторы</button></a>
+</p>
+<hr>
+{% endif %}
+
+<p style="text-align:center">
+    <a href="/history">История</a> | <a href="/logout">Выйти</a>
+</p>
+
+<h2>Сделать новый заказ</h2>
+<form method="post">
+    <label>Станция:</label>
+    <select name="station" required>
+        {% for code, name in stations.items() %}
+        <option value="{{ code }}">{{ name }}</option>
+        {% endfor %}
+    </select>
+
+    <label>Топливо:</label>
+    <select name="fuel" required>
+        {% for fuel in fuels %}
+        <option value="{{ fuel }}">{{ fuel }}</option>
+        {% endfor %}
+    </select>
+
+    <label>Тип ввода:</label>
+    <select name="amount_type" required>
+        <option value="rub">₽</option>
+        <option value="litres">Литры</option>
+    </select>
+
+    <label>Сумма/литры:</label>
+    <input type="number" name="amount" required min="1" step="any">
+
+    <button type="submit">Продолжить</button>
+</form>
+</body>
+</html>
+
+
+
+
+
+
+confirm.html
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Подтверждение заказа</title>
+
+    <style>
+    body { font-family: Arial, sans-serif; padding:10px; background:#f7f7f7; }
+    h1 { text-align:center; }
+
+    .card {
+        max-width:400px;
+        margin:0 auto 15px auto;
+        background:white;
+        padding:15px;
+        border-radius:10px;
+    }
+
+    .result {
+        background:#e8f5e9;
+        padding:10px;
+        border-radius:8px;
+        margin-top:10px;
+        text-align:center;
+        font-size:18px;
+    }
+
+    form { max-width:400px; margin:0 auto; background:white; padding:15px; border-radius:10px; }
+
+    input, select, button {
+        width:100%;
+        padding:10px;
+        margin:5px 0 15px 0;
+        font-size:16px;
+        border-radius:5px;
+        border:1px solid #ccc;
+    }
+
+    button { background:#4CAF50; color:white; border:none; }
+    button:hover { background:#45a049; }
+
+    a { text-decoration:none; color:#4CAF50; }
+    a:hover { text-decoration:underline; }
+
+    @media(max-width:500px) {
+        input, select, button { font-size:14px; padding:8px; }
+    }
+    </style>
+</head>
+
+<body>
+
+<h1>Подтвердите заказ</h1>
+
+<div class="card">
+    <p><strong>Станция:</strong> {{ station_name }}</p>
+    <p><strong>Топливо:</strong> {{ order.fuel }}</p>
+    <p><strong>Ввод:</strong> {{ order.amount }} {{ "₽" if order.amount_type=="rub" else "л" }}</p>
+
+    <p><strong>Цена за литр:</strong> {{ price }} ₽</p>
+
+    <div class="result">
+        {% if order.amount_type == "rub" %}
+            🚗 Вы получите: <strong>{{ (order.amount | float / price) | round(2) }} л</strong>
+        {% else %}
+            💰 К оплате: <strong>{{ (order.amount | float * price) | round(2) }} ₽</strong>
+        {% endif %}
+    </div>
+</div>
+
+<form method="post">
+    <label>Способ оплаты:</label>
+    <select name="payment_method" required>
+        <option value="cash">💵 Наличные</option>
+        <option value="card">💳 Карта</option>
+        <option value="bonus">🎁 Баллами</option>
+    </select>
+
+    <button type="submit">Подтвердить</button>
+</form>
+
+<p style="text-align:center">
+    <a href="/dashboard">← Назад</a>
+</p>
+
+</body>
+</html>
+
+
+
+
+
+
+history.html
+
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>История заказов</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding:10px; }
+        h1 { text-align:center; }
+        table { width:100%; border-collapse:collapse; margin-top:20px; }
+        th, td { border:1px solid #ccc; padding:10px; text-align:center; }
+        a { text-decoration:none; color:#4CAF50; }
+        a:hover { text-decoration:underline; }
+        @media(max-width:500px) { th, td { font-size:14px; padding:5px; } }
+    </style>
+</head>
+<body>
+    <h1>История заказов</h1>
+    <p>
+        <a href="/dashboard">Дашборд</a> |
+        <a href="/history/export">📥 Скачать Excel</a> |
+        <a href="/logout">Выйти</a>
+    </p>
+
+    {% if rows %}
+    <table border="1" cellpadding="5" cellspacing="0">
+        <tr>
+            <th>Дата</th>
+            <th>Адрес</th>
+            <th>Топливо</th>
+            <th>Литры</th>
+            <th>Рубли</th>
+            <th>Оплата</th>
+        </tr>
+        {% for row in rows %}
+        <tr>
+            <td>{{ row['Дата'] }}</td>
+            <td>{{ row['Адрес'] }}</td>
+            <td>{{ row['Топливо'] }}</td>
+            <td>{{ row['Литры'] }}</td>
+            <td>{{ row['Рубли'] }}</td>
+            <td>{{ row['Оплата'] }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% else %}
+    <p>Нет заказов</p>
+    {% endif %}
+</body>
+</html>
+
+
+
+
+
+add_operator.html
+
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Добавить оператора</title>
+<style>
+body { font-family: Arial, sans-serif; padding:10px; background:#f7f7f7; }
+h1 { text-align:center; }
+form { max-width:400px; margin:0 auto; background:white; padding:15px; border-radius:10px; }
+input, select, button { width:100%; padding:10px; margin:5px 0 15px 0; font-size:16px; border-radius:5px; border:1px solid #ccc; }
+button { background:#4CAF50; color:white; border:none; }
+button:hover { background:#45a049; }
+a { text-decoration:none; color:#4CAF50; }
+a:hover { text-decoration:underline; }
+@media(max-width:500px) { input, select, button { font-size:14px; padding:8px; } }
+</style>
+</head>
+<body>
+<h1>Добавить нового оператора</h1>
+<form method="post">
+    <label>Имя оператора:</label>
+    <input type="text" name="name" required>
+
+    <label>Телефон:</label>
+    <input type="text" name="phone" required placeholder="+7XXXXXXXXXX">
+
+    <label>Станция:</label>
+    <select name="station" required>
+        {% for code, name in stations.items() %}
+        <option value="{{ code }}">{{ name }}</option>
+        {% endfor %}
+    </select>
+
+    <button type="submit">Добавить</button>
+</form>
+<p style="text-align:center"><a href="/dashboard">← Назад</a></p>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+operators.html
+
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Список операторов</title>
+
+<style>
+body { font-family: Arial, sans-serif; padding:10px; }
+h1 { text-align:center; }
+
+table { width:100%; border-collapse:collapse; margin-top:20px; }
+th, td { border:1px solid #ccc; padding:10px; text-align:center; }
+a { text-decoration:none; color:#4CAF50; }
+a:hover { text-decoration:underline; }
+button { padding:8px 12px; font-size:14px; border-radius:5px; border:none; background:#4CAF50; color:white; }
+button:hover { background:#45a049; }
+.active { color:green; font-weight:bold; }
+.inactive { color:red; font-weight:bold; }
+@media(max-width:500px) { th, td { font-size:14px; padding:5px; } }
+</style>
+</head>
+
+<body>
+
+<h1>Список операторов</h1>
+
+<p>
+    <a href="/dashboard">Дашборд</a> |
+    <a href="/admin/add_operator"><button>➕ Добавить оператора</button></a> |
+    <a href="/logout">Выйти</a>
+</p>
+
+{% if operators %}
+<table>
+<tr>
+    <th>ID</th>
+    <th>Имя</th>
+    <th>Телефон</th>
+    <th>Станция</th>
+    <th>Статус</th>
+    <th>Действия</th>
+</tr>
+
+{% for op in operators %}
+<tr>
+    <td>{{ op['id'] }}</td>
+    <td>{{ op['name'] }}</td>
+    <td>{{ op['phone'] }}</td>
+    <td>{{ station_names.get(op['station'], op['station']) }}</td>
+
+    <!-- 🔥 СТАТУС ЧЕРЕЗ SHIFTS -->
+    <td>
+        {% set active_shift = shifts | selectattr("operator_id", "equalto", op['id']) | list %}
+        {% if active_shift %}
+            <span class="active">🟢 На смене</span><br>
+            <small>Начало: {{ active_shift[0]['start_time'] }}</small>
+        {% else %}
+            <span class="inactive">🔴 Не работает</span>
+        {% endif %}
+    </td>
+
+    <td>
+        <form method="post" style="display:inline;">
+            <input type="hidden" name="operator_id" value="{{ op['id'] }}">
+            <input type="hidden" name="action" value="delete">
+            <button onclick="return confirm('Удалить оператора?')" title="Удалить">🗑</button>
+        </form>
+    </td>
+</tr>
+{% endfor %}
+
+</table>
+{% else %}
+<p>Нет операторов</p>
+{% endif %}
+
+</body>
+</html>
+
+
+
+
+
+
+
+
+set_prices.html
+
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Изменить цены топлива</title>
+<style>
+body { font-family: Arial, sans-serif; padding:10px; background:#f7f7f7; }
+h1 { text-align:center; }
+form { max-width:400px; margin:0 auto; background:white; padding:15px; border-radius:10px; }
+input, select, button { width:100%; padding:10px; margin:5px 0 15px 0; font-size:16px; border-radius:5px; border:1px solid #ccc; }
+button { background:#4CAF50; color:white; border:none; }
+button:hover { background:#45a049; }
+a { text-decoration:none; color:#4CAF50; }
+a:hover { text-decoration:underline; }
+@media(max-width:500px) { input, select, button { font-size:14px; padding:8px; } }
+</style>
+</head>
+<body>
+<h1>Изменить цены топлива</h1>
+<form method="post">
+    <label>Выберите топливо:</label>
+    <select name="fuel" required>
+        {% for fuel in fuels %}
+        <option value="{{ fuel }}">{{ fuel }}</option>
+        {% endfor %}
+    </select>
+
+    <label>Цена за литр (₽):</label>
+    <input type="number" name="price" id="price" min="0" step="any" required value="{{ prices[fuels[0]] }}">
+
+<script>
+const prices = {{ prices | tojson }};
+const fuelSelect = document.querySelector('select[name="fuel"]');
+const priceInput = document.getElementById('price');
+
+fuelSelect.addEventListener('change', () => {
+    const selectedFuel = fuelSelect.value;
+    priceInput.value = prices[selectedFuel] || 0;
+});
+</script>
+
+    <button type="submit">Обновить цену</button>
+</form>
+<p style="text-align:center"><a href="/dashboard">← Назад</a></p>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+set_bonus.html
+
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Изменить бонусные баллы</title>
+<style>
+body { font-family: Arial, sans-serif; padding:10px; background:#f7f7f7; }
+h1,h2 { text-align:center; }
+form { max-width:400px; margin:0 auto; background:white; padding:15px; border-radius:10px; }
+input, select, button { width:100%; padding:10px; margin:5px 0 15px 0; font-size:16px; border-radius:5px; border:1px solid #ccc; }
+button { background:#4CAF50; color:white; border:none; }
+button:hover { background:#45a049; }
+table { width:100%; border-collapse:collapse; margin-top:20px; }
+th, td { border:1px solid #ccc; padding:10px; text-align:center; }
+a { text-decoration:none; color:#4CAF50; }
+a:hover { text-decoration:underline; }
+@media(max-width:500px) { input, select, button, th, td { font-size:14px; padding:5px; } }
+</style>
+</head>
+<body>
+<h1>Изменить бонусы</h1>
+<form method="post">
+    <label>Топливо:</label>
+    <select name="fuel" required>
+        {% for fuel in fuels %}
+            <option value="{{ fuel }}">{{ fuel }}</option>
+        {% endfor %}
+    </select>
+
+    <label>Способ оплаты:</label>
+    <select name="payment_method" required>
+        {% for p in payments %}
+            <option value="{{ p }}">{{ payments_ru[p] }}</option>
+        {% endfor %}
+    </select>
+
+    <label>Баллы за литр:</label>
+    <input type="number" name="points" min="0" step="any" required
+           value="{{ points.get(fuels[0], {}).get(payments[0], 0) }}">
+
+    <button type="submit">Обновить</button>
+</form>
+
+<h2>Текущие бонусы</h2>
+<table>
+<tr>
+    <th>Топливо</th>
+    <th>💵 Наличные</th>
+    <th>💳 Карта</th>
+</tr>
+{% for fuel in fuels %}
+<tr>
+    <td>{{ fuel }}</td>
+    <td>{{ points.get(fuel, {}).get('cash', 0) }}</td>
+    <td>{{ points.get(fuel, {}).get('card', 0) }}</td>
+</tr>
+{% endfor %}
+</table>
+<p style="text-align:center"><a href="/dashboard">← Назад</a></p>
+</body>
+</html>
+
+
+
+
+
+
+
+
+operator_dashboard.html
+
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Оператор</title>
+
+<style>
+body { font-family: Arial; padding:10px; }
+h1 { text-align:center; }
+table { width:100%; border-collapse:collapse; }
+th, td { border:1px solid #ccc; padding:8px; text-align:center; }
+.status { padding:5px; border-radius:5px; }
+.new { background:#fff3cd; }
+.done { background:#d4edda; }
+</style>
+</head>
+
+<body>
+
+<h1>📋 Заказы по станции</h1>
+
+<table>
+<tr>
+    <th>Дата</th>
+    <th>Топливо</th>
+    <th>Литры</th>
+    <th>Рубли</th>
+    <th>Оплата</th>
+    <th>Статус</th>
+</tr>
+
+{% for row in orders %}
+<tr>
+    <td>{{ row['Дата'] }}</td>
+    <td>{{ row['Топливо'] }}</td>
+    <td>{{ row['Литры'] or "-" }}</td>
+    <td>{{ row['Рубли'] or "-" }}</td>
+    <td>{{ row['Оплата'] }}</td>
+    <td class="status new">Новый</td>
+</tr>
+{% endfor %}
+
+</table>
+
+<p style="text-align:center">
+    <a href="/logout">Выйти</a>
+</p>
+
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+operator_panel.html
+
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Оператор</title>
+
+<style>
+body { font-family: Arial; padding:10px; text-align:center; }
+button { padding:15px; font-size:18px; margin:10px; width:80%; }
+.start { background:#4CAF50; color:white; }
+.stop { background:#f44336; color:white; }
+</style>
+
+</head>
+<body>
+
+<h1>⛽ Панель оператора</h1>
+
+<p><strong>Станция:</strong> {{ station }}</p>
+
+{% if shift %}
+    <h2 style="color:green;">Смена активна</h2>
+
+    <form method="post">
+        <input type="hidden" name="action" value="end">
+        <button class="stop">❌ Закончить смену</button>
+    </form>
+
+{% else %}
+    <h2 style="color:red;">Смена не начата</h2>
+
+    <form method="post">
+        <input type="hidden" name="action" value="start">
+        <button class="start">▶️ Начать смену</button>
+    </form>
+{% endif %}
+
+<p><a href="/logout">Выйти</a></p>
+
+</body>
+</html>
+
+
+
+
+
+
+shift_summary.html
+
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Итоги смены</title>
+<style>
+body { font-family: Arial; padding:10px; text-align:center; }
+button { padding:15px; font-size:18px; margin:20px; width:60%; background:#4CAF50; color:white; border:none; border-radius:5px; }
+</style>
+</head>
+<body>
+
+<h1>⛽ Смена завершена</h1>
+
+<p><strong>Станция:</strong> {{ summary.station }}</p>
+<p><strong>Начало смены:</strong> {{ summary.start_time }}</p>
+<p><strong>Конец смены:</strong> {{ summary.end_time }}</p>
+
+<form method="post">
+    <button type="submit">Продолжить</button>
+</form>
+
+</body>
+</html>
+
+
+
+
+
+
+
+
+operator_login.html
+
+
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Выбор оператора</title>
+
+<style>
+body { font-family: Arial; padding:10px; text-align:center; }
+form { max-width:400px; margin:auto; }
+button {
+    width:100%;
+    padding:15px;
+    margin:10px 0;
+    font-size:16px;
+}
+</style>
+</head>
+
+<body>
+
+<h1>Выберите оператора</h1>
+
+<form method="post">
+    {% for op in operators %}
+        <button type="submit" name="operator_id" value="{{ op['id'] }}">
+            {{ op['name'] }} ({{ op['station'] }})
+        </button>
+    {% endfor %}
+</form>
+
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+from flask import Flask, session, redirect, request, render_template, flash
+import sqlite3
+import os
+from flask import send_file
+import pandas as pd
+import io
+from flask import Response, stream_with_context
+import time
+import sqlite3
+import json
+import openpyxl
+app = Flask(__name__)
+app.secret_key = os.getenv("SECRET_KEY", "dev-key")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "cars.db")
+
+STATION_NAMES = {
+    "station_1": "Южное шоссе 129",
+    "station_2": "Южное шоссе 12/2",
+    "station_3": "Лесная 66А",
+    "station_4": "Борковская 72/1"
+
+}
+#755909251
+STATION_OPERATORS = {
+    "Южное шоссе 129": 755909251,
+    "Южное шоссе 12/2": 8766687678,
+    "Лесная 66А": 31313131231,
+    "Борковская 72/1": 4674574545
+}
+ADMIN_IDS = [503576036]  # Сюда вставить ID админа Telegram
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+from datetime import datetime, timezone, timedelta
+
+def samara_now():
+    """Возвращает текущее время в Самарском часовом поясе (UTC+4)"""
+    samara_tz = timezone(timedelta(hours=4))
+    return datetime.now(samara_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+
+#-----------ВХОД В СИСТЕМУ----------------
+
+
+
+@app.route("/")
+def index():
+    if "user_id" in session:
+        return redirect("/dashboard")
+    return "🌐 Войдите через Telegram (/login?telegram_id=YOUR_TELEGRAM_ID)"
+
+
+@app.route("/login")
+def login():
+    telegram_id = request.args.get("telegram_id")
+    if not telegram_id:
+        return "❌ Telegram ID не указан", 400
+
+    telegram_id_int = int(telegram_id)
+
+    # Проверка активных смен по базе (можно оставить)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM shifts WHERE active = 1 LIMIT 1")
+    active_shift = cur.fetchone()
+    if active_shift:
+        print("✅ Есть активные смены")
+    else:
+        print("❌ Нет активных смен")
+
+    # Проверяем обычного пользователя
+    cur.execute("SELECT id FROM users WHERE telegram_id = ?", (telegram_id_int,))
+    user = cur.fetchone()
+
+    # Проверка оператора через словарь STATION_OPERATORS
+    operator_station = None
+    for station_name, op_id in STATION_OPERATORS.items():
+        if op_id == telegram_id_int:
+            operator_station = station_name
+            break
+
+    if not user and not operator_station:
+        conn.close()
+        return "❌ Нет доступа", 403
+
+    session["telegram_id"] = telegram_id_int
+    session["is_admin"] = telegram_id_int in ADMIN_IDS
+
+    if operator_station:
+        # Оператор найден
+        session["pending_operator"] = telegram_id_int
+        session["station"] = operator_station  # сохраняем станцию оператора
+        conn.close()
+        return redirect("/operator/login")
+
+    # Обычный пользователь
+    session["role"] = "user"
+    session["user_id"] = user["id"] if user else None
+
+    conn.close()
+    return redirect("/dashboard")
+
+
+@app.route("/operator/login", methods=["GET", "POST"])
+def operator_login():
+    if "pending_operator" not in session:
+        return redirect("/")
+
+    telegram_id = session["pending_operator"]
+    print(f"🔹 pending_operator: {telegram_id}")
+
+    # --- Находим станцию по словарю STATION_OPERATORS ---
+    station_name = None
+    station_id = None
+    for sid, name in STATION_NAMES.items():
+        if STATION_OPERATORS.get(name) == telegram_id:
+            station_name = name
+            station_id = sid
+            break
+
+    if not station_id:
+        print(f"❌ Для Telegram ID {telegram_id} нет станции")
+        return "❌ На этой станции нет операторов в базе"
+
+    print(f"✅ Станция найдена через словарь: {station_name} (id: {station_id})")
+
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    # --- Берем всех операторов на этой станции ---
+    cur.execute("SELECT id, name, station FROM operators WHERE station = ?", (station_id,))
+    operators = cur.fetchall()
+    print(f"🔹 Найдено операторов: {len(operators)}")
+    for op in operators:
+        print(f"   - {op['name']} (id {op['id']})")
+
+    if request.method == "POST":
+        operator_id = request.form.get("operator_id")
+
+        # Проверяем выбранного оператора
+        selected_op = None
+        for op in operators:
+            if str(op["id"]) == str(operator_id):
+                selected_op = op
+                break
+
+        if not selected_op:
+            return "❌ Оператор не найден"
+
+        # Логиним
+        session.pop("pending_operator")
+        session["telegram_id"] = telegram_id
+        session["role"] = "operator"
+        session["operator_id"] = selected_op["id"]
+        session["station"] = selected_op["station"]
+
+        return redirect("/operator")
+
+    conn.close()
+    return render_template("operator_login.html", operators=operators, station=station_name)
+
+
+
+
+#---------------ПОЛЬЗОВАТЕЛЬСКИЙ БЛОК----------------------
+
+@app.route("/dashboard", methods=["GET", "POST"])
+def dashboard():
+    if "telegram_id" not in session:
+        return redirect("/")
+
+    role = session.get("role")
+
+    # 👉 ОПЕРАТОР
+    if role == "operator":
+        conn = get_db()
+        cur = conn.cursor()
+        # Берем все заявки на станции, последние 50, новые сверху
+        cur.execute(
+            "SELECT * FROM history WHERE Адрес = ? ORDER BY rowid DESC LIMIT 50",
+            (session["station"],)
+        )
+        orders = cur.fetchall()
+        conn.close()
+        return render_template("operator_dashboard.html", orders=orders)
+
+    # 👉 ОБЫЧНЫЙ пользователь
+    fuels = ["Бензин", "Газ"]
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Получаем новые уведомления
+    cur.execute("""
+        SELECT * FROM notifications
+        WHERE telegram_id=? AND seen=0
+        ORDER BY created_at DESC
+    """, (session["telegram_id"],))
+    notifications = cur.fetchall()
+
+    # Помечаем уведомления как просмотренные
+    cur.execute("UPDATE notifications SET seen=1 WHERE telegram_id=? AND seen=0", (session["telegram_id"],))
+    conn.commit()
+    conn.close()
+
+    if request.method == "POST":
+        station_code = request.form.get("station")
+        station_name = STATION_NAMES.get(station_code, station_code)
+
+        # Проверка активной смены
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM shifts WHERE station=? AND active=1", (station_code,))
+        active_shift = cur.fetchone()
+        if not active_shift:
+            conn.close()
+            flash(f"❌ На станции {station_name} нет активной смены. Заказ невозможен.", "error")
+            return redirect("/dashboard")
+
+        # Формируем заказ
+        order = {
+            "station": station_code,
+            "fuel": request.form.get("fuel"),
+            "amount_type": request.form.get("amount_type"),
+            "amount": request.form.get("amount"),
+            "full_tank": request.form.get("amount_type") == "full_tank"
+        }
+        session["current_order"] = order
+
+        if order["full_tank"]:
+            # Полный бак — сразу в history и на loading
+            cur.execute("""
+                INSERT INTO history (Адрес, Топливо, Telegram_ID, Оплата, status, Дата)
+                VALUES (?, ?, ?, ?, 'pending_full_tank', ?)
+            """, (station_code, order["fuel"], session["telegram_id"], "pending_full_tank", samara_now()))
+            conn.commit()
+            order_id = cur.lastrowid
+            conn.close()
+            flash(f"✅ Заказ на полный бак на станции {station_name} отправлен оператору.", "success")
+            return redirect(f"/loading/{order_id}")
+        else:
+            # Обычный заказ — сначала подтверждение
+            conn.close()
+            return redirect("/confirm")
+
+    return render_template(
+        "dashboard.html",
+        stations=STATION_NAMES,
+        fuels=fuels,
+        is_admin=session.get("is_admin", False),
+        notifications=notifications
+    )
+
+@app.route("/operator/orders_json")
+def operator_orders_json():
+    if session.get("role") != "operator":
+        return {"error": "no access"}
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT * FROM history
+        WHERE status='pending' AND shift_id IS NULL AND Адрес=?
+        ORDER BY rowid DESC
+    """, (session["station"],))
+
+    rows = cur.fetchall()
+    conn.close()
+
+    return [{
+        "id": r["№"],
+        "fuel": r["Топливо"],
+        "litres": r["Литры"] or 0,
+        "rub": r["Рубли"] or 0,
+        "payment": r["Оплата"],
+        "date": r["Дата"]
+    } for r in rows]
+
+
+
+@app.route("/confirm_full_tank", methods=["GET"])
+def confirm_full_tank():
+    if "user_id" not in session or "current_order" not in session:
+        return redirect("/dashboard")
+
+    order = session["current_order"]
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO history (Адрес, Топливо, Telegram_ID, Оплата, status) VALUES (?, ?, ?, ?, ?)",
+        (order["station"], order["fuel"], session["telegram_id"], "pending_full_tank", "pending_full_tank")
+    )
+    conn.commit()
+    conn.close()
+    session.pop("current_order")
+    flash("✅ Заказ отправлен оператору. Ожидайте подтверждения.", "success")
+    return redirect("/dashboard")
+
+
+@app.route("/loading/<int:order_id>")
+def loading(order_id):
+    if "telegram_id" not in session:
+        return redirect("/dashboard")
+
+    return render_template("loading.html", order_id=order_id)
+
+
+@app.route("/confirm", methods=["GET", "POST"])
+def confirm():
+    if "user_id" not in session or "current_order" not in session:
+        return redirect("/dashboard")
+
+    order = session["current_order"]
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Получаем цену топлива
+    cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type = ?", (order["fuel"],))
+    row = cur.fetchone()
+    price = row["price_per_litre"] if row else 0
+    cur.execute("SELECT bonus FROM users WHERE telegram_id=?", (session["telegram_id"],))
+    user = cur.fetchone()
+    bonus = user["bonus"] if user else 0
+    if request.method == "POST":
+        payment = request.form.get("payment_method")
+        amount = float(order["amount"])
+
+        if order["amount_type"] == "rub":
+            rub = amount
+            litres = round(amount / price, 2) if price else 0
+        else:
+            litres = amount
+            rub = round(amount * price, 2)
+
+        # Сохраняем заказ как pending для оператора
+        cur.execute("""
+            INSERT INTO history (Адрес, Топливо, Рубли, Литры, Оплата, Telegram_ID, status, Дата)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+        """, (order["station"], order["fuel"], rub, litres, payment, session["telegram_id"], samara_now()))
+        conn.commit()
+        order_id = cur.lastrowid  # <-- ДО закрытия соединения
+        conn.close()
+        return redirect(f"/order_sent/{order_id}") # перенаправляем на страницу ожидания
+
+    conn.close()
+    station_name = STATION_NAMES.get(order["station"], order["station"])
+
+    return render_template(
+        "confirm.html",
+        order=order,
+        price=price,
+        station_name=station_name,
+        bonus=bonus
+    )
+
+
+
+
+@app.route("/order_sent/<int:order_id>")
+def order_sent(order_id):
+    if "telegram_id" not in session:
+        return redirect("/dashboard")
+    return render_template("order_sent.html", order_id=order_id)
+
+@app.route("/api/done_orders")
+def api_done_orders():
+    if "telegram_id" not in session or session.get("role") == "operator":
+        return {"orders": []}
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT h."№", h.Литры, h.Топливо, h.Оплата, fb.points_per_litre
+        FROM history h
+        LEFT JOIN fuel_bonus fb
+        ON h.Топливо = fb.fuel_type AND h.Оплата = fb.payment_method
+        WHERE h.Telegram_ID = ? AND h.status='done'
+        ORDER BY h.Дата DESC
+        LIMIT 5
+    """, (session["telegram_id"],))
+    done_orders = cur.fetchall()
+    conn.close()
+
+    notifications = []
+    for order in done_orders:
+        litres = order["Литры"] or 0
+        points_per_litre = order["points_per_litre"] or 0
+        points = round(litres * points_per_litre, 2)
+        notifications.append({
+            "order_id": order["№"],
+            "fuel": order["Топливо"],
+            "litres": litres,
+            "points": points,
+            "payment": order["Оплата"]
+        })
+
+    return {"orders": notifications}
+
+
+
+
+# @app.route("/order_success/<int:order_id>")
+# def order_success(order_id):
+#     conn = get_db()
+#     cur = conn.cursor()
+#     cur.execute("SELECT * FROM history WHERE rowid=?", (order_id,))
+#     order = cur.fetchone()
+#     conn.close()
+#
+#     if not order:
+#         return "Заказ не найден", 404
+#
+#     fuel = order['Топливо']
+#     litres = order['Литры'] or 0
+#     rub = order['Рубли'] or 0
+#     points = order['Баллы']  # оставляем как есть
+#     payment = order['Оплата']
+#
+#     # --- Отладка прямо в шаблон ---
+#     debug_info = f"DEBUG: payment={payment}, points={points}"
+#
+#     bonus_message = payment == "bonus"
+#
+#     return render_template(
+#         "order_success.html",
+#         fuel=fuel,
+#         litres=litres,
+#         rub=rub,
+#         points=points,
+#         bonus_message=bonus_message,
+#         debug_info=debug_info
+#     )
+
+
+
+
+@app.route("/notifications/stream")
+def notifications_stream():
+    telegram_id = request.args.get("telegram_id")
+
+    def event_stream():
+        conn = get_db()
+        cur = conn.cursor()
+
+        while True:
+            cur.execute("""
+                SELECT * FROM notifications
+                WHERE telegram_id=? AND seen=0
+                ORDER BY created_at ASC
+            """, (telegram_id,))
+            rows = cur.fetchall()
+
+            if rows:
+                for row in rows:
+                    data = dict(row)
+                    yield f"data: {json.dumps(data)}\n\n"
+                    cur.execute("UPDATE notifications SET seen=1 WHERE id=?", (row["id"],))
+                    conn.commit()
+            else:
+                # Отправляем пустое событие каждые 2 сек
+                yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+
+            time.sleep(2)
+
+    return Response(event_stream(), content_type="text/event-stream")
+
+
+
+
+
+#----------ПОТОК ОПЕРАТОРА----------------------
+
+
+@app.route("/operator", methods=["GET", "POST"])
+def operator_panel():
+    if session.get("role") != "operator":
+        return "❌ Доступ запрещен", 403
+
+    station = session.get("station")
+    op_id = session.get("operator_id")
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # --- Получаем оператора ---
+    cur.execute("SELECT * FROM operators WHERE id=?", (op_id,))
+    operator = cur.fetchone()
+    if not operator:
+        conn.close()
+        return "❌ Оператор не найден"
+
+    # --- Проверяем активную смену ---
+    cur.execute("SELECT * FROM shifts WHERE operator_id=? AND active=1", (op_id,))
+    shift = cur.fetchone()
+    shift_dict = dict(shift) if shift else None
+
+    from datetime import datetime
+
+    # --- НАЧАТЬ СМЕНУ ---
+    if request.method == "POST" and request.form.get("action") == "start":
+        start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute(
+            "INSERT INTO shifts (operator_id, station, active, start_time) VALUES (?, ?, 1, ?)",
+            (op_id, station, samara_now())
+        )
+        conn.commit()
+        # получаем id новой смены
+        shift_id = cur.lastrowid
+        cur.execute("UPDATE operators SET active=1 WHERE id=?", (op_id,))
+        conn.commit()
+        conn.close()
+        return redirect("/operator")
+
+    # --- ЗАКОНЧИТЬ СМЕНУ ---
+    if request.method == "POST" and request.form.get("action") == "end" and shift:
+        end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Обновляем смену
+        cur.execute(
+            "UPDATE shifts SET active=0, end_time=? WHERE id=?",
+            (samara_now(), shift["id"])
+        )
+        cur.execute("UPDATE operators SET active=0 WHERE id=?", (op_id,))
+
+        # Помечаем все обычные заявки этой смены как done
+        cur.execute(
+            "UPDATE history SET status='done', shift_id=? WHERE Адрес=? AND status='pending'",
+            (shift["id"], station)
+        )
+
+        # Помечаем все заказы 'полный бак' как done
+        cur.execute(
+            "UPDATE history SET status='done', shift_id=? WHERE Адрес=? AND status='pending_full_tank'",
+            (shift["id"], station)
+        )
+        conn.commit()
+
+        # Считаем итоги по топливу только этой смены
+        cur.execute(
+            "SELECT Топливо, SUM(Литры) AS total_litres, SUM(Рубли) AS total_rub "
+            "FROM history WHERE shift_id=? GROUP BY Топливо",
+            (shift["id"],)
+        )
+        fuel_summary = [dict(row) for row in cur.fetchall()]
+
+        conn.close()
+
+        # Сохраняем данные смены и итоги в сессию для summary
+        session["shift_summary"] = {
+            "station": station,
+            "start_time": shift["start_time"],
+            "end_time": end_time,
+            "fuel_summary": fuel_summary
+        }
+
+        return redirect("/operator/summary")
+
+    # --- Загружаем новые заявки ---
+    pending_orders = []
+    full_tank_orders = []
+    if shift:
+        # Обычные заказы
+        cur.execute(
+            "SELECT * FROM history WHERE status='pending' AND shift_id IS NULL AND Адрес=? ORDER BY rowid DESC",
+            (station,)
+        )
+        pending_orders = [dict(row) for row in cur.fetchall()]
+
+        # Заказы полный бак
+        cur.execute(
+            "SELECT * FROM history WHERE status='pending_full_tank' AND shift_id IS NULL AND Адрес=? ORDER BY rowid DESC",
+            (station,)
+        )
+        full_tank_orders = [dict(row) for row in cur.fetchall()]
+
+    conn.close()
+
+    return render_template(
+        "operator_panel.html",
+        shift=shift_dict,
+        station=station,
+        orders=pending_orders,
+        full_tank_orders=full_tank_orders,
+        STATION_NAMES=STATION_NAMES
+    )
+@app.route("/operator/done_order/<int:order_id>")
+def operator_done_order(order_id):
+    if session.get("role") != "operator":
+        return "❌ Нет доступа", 403
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute('SELECT * FROM history WHERE "№"=?', (order_id,))
+    order = cur.fetchone()
+    if not order:
+        conn.close()
+        return "❌ Заказ не найден"
+
+    # Можно здесь сделать перевод способа оплаты на русский
+    payment_labels = {'card': 'Карта', 'cash': 'Наличка', 'bonus': 'Бонусы'}
+    order_payment_ru = payment_labels.get(order["Оплата"], order["Оплата"])
+
+    conn.close()
+    return render_template(
+        "operator_done_order.html",
+        order=order,
+        order_payment_ru=order_payment_ru
+    )
+
+@app.route("/operator/full_tank/<int:order_id>", methods=["GET", "POST"])
+def operator_full_tank_submit(order_id):
+    if session.get("role") != "operator":
+        return "❌ Нет доступа", 403
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute('SELECT * FROM history WHERE "№"=?', (order_id,))
+    order = cur.fetchone()
+    if not order:
+        conn.close()
+        return "❌ Заказ не найден"
+
+    station_name = STATION_NAMES.get(order["Адрес"], order["Адрес"])
+
+    if request.method == "POST":
+        litres = float(request.form.get("litres"))
+
+        # обновляем литры и статус ожидания оплаты
+        cur.execute("""
+            UPDATE history
+            SET Литры=?, status='waiting_payment'
+            WHERE "№"=?
+        """, (litres, order_id))
+
+        # 🔥 уведомление для SSE
+        cur.execute("""
+            INSERT INTO notifications (telegram_id, message, type, order_id)
+            VALUES (?, ?, ?, ?)
+        """, (order["Telegram_ID"], "Подтвердите оплату", "full_tank_ready", order_id))
+
+        conn.commit()
+        conn.close()
+
+        # оператор перенаправляется на страницу ожидания
+        return redirect(f"/operator/wait_payment/{order_id}")
+    conn.close()
+    return render_template("confirm_full_tank.html", order=order, station_name=station_name)
+
+
+#ОПЕРАТОР ЖДЕТ ПОЛЬЗОВАТЕЛЯ ПОКА ОН ВЫБЕРЕТ СПОСОБ ОПЛАТЫ
+
+@app.route("/operator/wait_payment/<int:order_id>")
+def operator_wait_payment(order_id):
+    if session.get("role") != "operator":
+        return "❌ Нет доступа", 403
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute('SELECT * FROM history WHERE "№"=?', (order_id,))
+    order = cur.fetchone()
+    if not order:
+        conn.close()
+        return "❌ Заказ не найден"
+
+    # Оплата бонусами уже завершена
+    if order["Оплата"] == "bonus" and order["status"] == "done":
+        conn.close()
+        return redirect(f"/operator/order_done_bonus/{order_id}")
+
+    station_address = STATION_NAMES.get(order["Адрес"], order["Адрес"])
+    operator_telegram_id = STATION_OPERATORS.get(station_address)
+
+    conn.close()
+    return render_template(
+        "operator_wait_payment.html",
+        order=order,
+        operator_telegram_id=operator_telegram_id
+    )
+@app.route("/operator/accept_payment/<int:order_id>", methods=["GET", "POST"])
+def operator_accept_payment(order_id):
+    if session.get("role") != "operator":
+        return "❌ Нет доступа", 403
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute('SELECT * FROM history WHERE "№"=?', (order_id,))
+    order = cur.fetchone()
+
+    if not order:
+        conn.close()
+        return "❌ Заказ не найден"
+
+    if request.method == "POST":
+        # Просто подтверждаем оплату (не меняем cash/card/bonus)
+        cur.execute("""
+            UPDATE history
+            SET status='done'
+            WHERE "№"=?
+        """, (order_id,))
+
+        # Отправляем уведомление пользователю
+        cur.execute("""
+            INSERT INTO notifications (
+                telegram_id, message, type, order_id, fuel, litres, amount_rub, points, payment_method
+            ) VALUES (?, ?, 'order_done', ?, ?, ?, ?, ?, ?)
+        """, (
+            order["Telegram_ID"],
+            f"Оплата подтверждена оператором",
+            order_id,
+            order["Топливо"],
+            order["Литры"],
+            order["Рубли"],
+            0,
+            order["Оплата"]   # <- оставляем старый способ оплаты без изменений
+        ))
+
+        conn.commit()
+        conn.close()
+
+        # Редирект на done_order
+        return redirect(f"/operator/done_order/{order_id}")
+
+    conn.close()
+    return render_template("operator_accept_payment.html", order=order)
+
+@app.route("/operator/order_ready/<int:order_id>")
+def operator_order_ready(order_id):
+    print(f"[DEBUG] operator_order_ready for order #{order_id}")
+    if session.get("role") != "operator":
+        print("[DEBUG] Нет доступа")
+        return "❌ Нет доступа", 403
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute('SELECT * FROM history WHERE "№"=?', (order_id,))
+    order = cur.fetchone()
+    conn.close()
+
+    if not order:
+        print("[DEBUG] Заказ не найден")
+        return "❌ Заказ не найден"
+
+    print(f"[DEBUG] Оператор видит заказ: #{order_id}, Статус: {order['status']}, Оплата: {order['Оплата']}")
+    return render_template("operator_order_ready.html", order=order)
+
+@app.route("/confirmed_analog/<int:order_id>", methods=["GET", "POST"])
+def confirmed_analog(order_id):
+    if "telegram_id" not in session:
+        return redirect("/")
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Получаем заказ
+    cur.execute('SELECT * FROM history WHERE "№"=?', (order_id,))
+    order = cur.fetchone()
+    if not order:
+        conn.close()
+        return "❌ Заказ не найден"
+
+    # Цена топлива
+    cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type=?", (order["Топливо"],))
+    fuel_row = cur.fetchone()
+    price_per_litre = fuel_row["price_per_litre"] if fuel_row else 0
+
+    litres = order["Литры"] or 0
+    rub = round(litres * price_per_litre, 2)
+
+    # Имя станции
+    station_name = STATION_NAMES.get(order["Адрес"], order["Адрес"])
+
+    # Баланс пользователя
+    cur.execute("SELECT bonus FROM users WHERE telegram_id=?", (session["telegram_id"],))
+    user = cur.fetchone()
+    user_bonus = user["bonus"] if user else 0
+
+    if request.method == "POST":
+        payment = request.form.get("payment_method")
+
+        if payment == "bonus":
+            # Оплата бонусами сразу
+            cur.execute("""
+                UPDATE history
+                SET Оплата='bonus', status='done', Рубли=?, points=0
+                WHERE "№"=?
+            """, (rub, order_id))
+
+            # Уведомление оператору о бонусной оплате
+            operator_telegram_id = STATION_OPERATORS.get(station_name)
+            cur.execute("""
+                INSERT INTO notifications (telegram_id, message, type, order_id)
+                VALUES (?, ?, 'bonus_paid', ?)
+            """, (
+                operator_telegram_id,
+                f"Пользователь оплатил заказ #{order_id} бонусами",
+                order_id
+            ))
+
+            conn.commit()
+            conn.close()
+            return redirect(f"/order_success_analog/{order_id}")
+
+        else:
+            # Обычная оплата (cash/card)
+            cur.execute("""
+                UPDATE history
+                SET Оплата=?, status='waiting_operator_confirm'
+                WHERE "№"=?
+            """, (payment, order_id))
+
+            # Уведомление оператору о выборе способа оплаты
+            operator_telegram_id = STATION_OPERATORS.get(station_name)
+            cur.execute("""
+                INSERT INTO notifications (telegram_id, message, type, order_id)
+                VALUES (?, ?, 'waiting_payment', ?)
+            """, (
+                operator_telegram_id,
+                f"Клиент выбрал способ оплаты: {payment} для заказа #{order_id}",
+                order_id
+            ))
+
+            conn.commit()
+            conn.close()
+            return redirect(f"/pay_order/{order_id}")
+
+    conn.close()
+    return render_template(
+        "confirmed_analog.html",
+        order=order,
+        rub=rub,
+        station_name=station_name,
+        user_bonus=user_bonus
+    )
+
+
+
+@app.route("/pay_order/<int:order_id>")
+def pay_order(order_id):
+    # Проверяем, что пользователь зашел через Telegram
+    if "telegram_id" not in session:
+        return redirect("/")
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute('SELECT * FROM history WHERE "№"=?', (order_id,))
+    order = cur.fetchone()
+    conn.close()
+
+    if not order:
+        return "❌ Заказ не найден"
+
+    # Просто страница ожидания оператора
+    return render_template("pay_order.html", order_id=order_id)
+
+@app.route("/order_success_analog/<int:order_id>")
+def order_success_analog(order_id):
+    if "telegram_id" not in session:
+        return redirect("/")
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Получаем данные заказа с бонусами и ценой топлива
+    cur.execute("""
+        SELECT h.Литры, h.Топливо, h.Оплата, h."Рубли", fb.points_per_litre, f.price_per_litre, h.Telegram_ID
+        FROM history h
+        LEFT JOIN fuel_bonus fb
+            ON h.Топливо = fb.fuel_type AND h.Оплата = fb.payment_method
+        LEFT JOIN fuel f
+            ON h.Топливо = f.fuel_type
+        WHERE h."№"=?
+    """, (order_id,))
+    order = cur.fetchone()
+    if not order:
+        conn.close()
+        return "❌ Заказ не найден"
+
+    litres = order["Литры"] or 0
+    price_per_litre = order["price_per_litre"] or 0
+    rub = order["Рубли"] or round(litres * price_per_litre, 2)
+
+    points = 0
+    # Начисляем бонусы только если оплата не бонусами
+    if order["Оплата"] != "bonus":
+        points_per_litre = order["points_per_litre"] or 0
+        points = round(litres * points_per_litre, 2)
+
+        if points > 0:
+            # Обновляем историю и начисляем бонусы пользователю
+            cur.execute("""
+                UPDATE history
+                SET points = ?
+                WHERE "№" = ?
+            """, (points, order_id))
+
+            cur.execute("""
+                UPDATE users
+                SET bonus = bonus + ?
+                WHERE telegram_id = ?
+            """, (points, order["Telegram_ID"]))
+
+            # Создаем уведомление для Telegram
+            cur.execute("""
+                INSERT INTO notifications (telegram_id, message, points, type, order_id, fuel, litres, amount_rub)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                order["Telegram_ID"],
+                f"✅ Начислено {points} бонусных баллов за заказ #{order_id}",
+                points,
+                "bonus_added",
+                order_id,
+                order["Топливо"],
+                litres,
+                rub
+            ))
+
+    conn.commit()
+    conn.close()
+
+    return render_template(
+        "order_success_analog.html",
+        points=points,
+        fuel=order["Топливо"],
+        litres=litres,
+        rub=rub,
+        payment_method=order["Оплата"]
+    )
+
+@app.route("/operator/confirm_payment/<int:order_id>", methods=["POST"])
+def confirm_payment(order_id):
+    if session.get("role") != "operator":
+        return "❌ Нет доступа", 403
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Получаем заказ
+    cur.execute('SELECT * FROM history WHERE "№"=?', (order_id,))
+    order = cur.fetchone()
+    if not order:
+        conn.close()
+        return "❌ Заказ не найден"
+
+    litres = order["Литры"] or 0
+
+    # --- Получаем цену топлива ---
+    cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type=?", (order["Топливо"],))
+    price_row = cur.fetchone()
+    price_per_litre = price_row["price_per_litre"] if price_row else 0
+    rub = round(litres * price_per_litre, 2)
+
+    # --- Получаем бонусные баллы ---
+    cur.execute("""SELECT points_per_litre FROM fuel_bonus
+                   WHERE fuel_type=? AND payment_method=?""",
+                (order["Топливо"], order["Оплата"]))
+    row = cur.fetchone()
+    points_per_litre = row["points_per_litre"] if row else 0
+    points = round(litres * points_per_litre, 2)
+
+    # --- Обновляем историю сразу с рублями и баллами ---
+    cur.execute("""
+        UPDATE history
+        SET status='done',
+            Рубли=?,
+            points=?
+        WHERE "№"=?
+    """, (rub, points, order_id))
+
+    # --- Начисляем бонус пользователю ---
+    if points > 0:
+        cur.execute("UPDATE users SET bonus = bonus + ? WHERE telegram_id=?",
+                    (points, order["Telegram_ID"]))
+
+    # --- Отправляем уведомление пользователю ---
+    cur.execute("""INSERT INTO notifications (
+                        telegram_id, message, type, order_id, fuel, litres, rub, points
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    order["Telegram_ID"],
+                    "Ваш заказ выполнен",
+                    "order_done",
+                    order_id,
+                    order["Топливо"],
+                    litres,
+                    rub,
+                    points
+                ))
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/operator")
+
+
+@app.route("/api/order_status/<int:order_id>")
+def order_status(order_id):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute('SELECT status FROM history WHERE "№"=?', (order_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return {"status": "not_found"}
+    return {"status": row["status"]}
+
+
+
+@app.route("/operator/start_full_tank/<int:order_id>", methods=["POST"])
+def start_full_tank(order_id):
+    if session.get("role") != "operator":
+        return "❌ Нет доступа", 403
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Проверяем, существует ли заказ и статус pending_full_tank
+    cur.execute('SELECT * FROM history WHERE "№"=? AND status="pending_full_tank"', (order_id,))
+    order = cur.fetchone()
+    if not order:
+        conn.close()
+        return "❌ Заказ не найден или уже в работе"
+
+    # Меняем статус на in_progress
+    cur.execute('UPDATE history SET status="in_progress" WHERE "№"=?', (order_id,))
+    conn.commit()
+    conn.close()
+
+    # Перенаправляем на страницу ввода литров
+    return redirect(f"/operator/full_tank/{order_id}")
+
+
+@app.route("/operator/complete_full_tank/<int:order_id>", methods=["POST"])
+def complete_full_tank(order_id):
+    if session.get("role") != "operator":
+        return "❌ Нет доступа", 403
+
+    # Получаем данные из формы
+    litres = float(request.form.get("litres", 0))
+    payment = request.form.get("payment_method")  # cash или card
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Получаем заказ
+    cur.execute('SELECT * FROM history WHERE "№"=?', (order_id,))
+    order = cur.fetchone()
+    if not order:
+        conn.close()
+        return "❌ Заказ не найден"
+
+    fuel_type = order["Топливо"]
+
+    # Получаем цену топлива
+    cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type=?", (fuel_type,))
+    row = cur.fetchone()
+    price_per_litre = row["price_per_litre"] if row else 0
+    rub = round(litres * price_per_litre, 2)
+
+    # --- Обновляем заказ как выполненный ---
+    cur.execute("""
+        UPDATE history
+        SET Литры=?, Рубли=?, Оплата=?, status='done'
+        WHERE "№"=?
+    """, (litres, rub, payment, order_id))
+
+    # --- Начисляем бонусы ---
+    cur.execute("""
+        SELECT points_per_litre FROM fuel_bonus
+        WHERE fuel_type=? AND payment_method=?
+    """, (fuel_type, payment))
+    row = cur.fetchone()
+    points_per_litre = row["points_per_litre"] if row else 0
+    points = round(litres * points_per_litre, 2)
+
+    if points > 0:
+        cur.execute("""
+            UPDATE users SET bonus = bonus + ?
+            WHERE telegram_id=?
+        """, (points, order["Telegram_ID"]))
+
+    # --- Уведомляем пользователя ---
+    cur.execute("""
+        INSERT INTO notifications (
+            telegram_id, message, type, order_id, fuel, litres, amount_rub, points
+        )
+        VALUES (?, ?, 'order_done', ?, ?, ?, ?, ?)
+    """, (
+        order["Telegram_ID"],
+        "Ваш заказ выполнен",
+        order_id,
+        fuel_type,
+        litres,
+        rub,
+        points
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return redirect("/operator")
+
+@app.route("/operator/complete/<int:order_id>", methods=["POST"])
+def operator_complete_order(order_id):
+    if session.get("role") != "operator":
+        return "❌ Доступ запрещен", 403
+
+    op_id = session.get("operator_id")
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Проверяем активную смену
+    cur.execute("SELECT * FROM shifts WHERE operator_id=? AND active=1", (op_id,))
+    shift = cur.fetchone()
+    if not shift:
+        conn.close()
+        return "❌ Нет активной смены"
+
+    # Получаем заказ (обычный или полный бак)
+    cur.execute('SELECT * FROM history WHERE "№"=? AND status IN ("pending", "pending_full_tank")', (order_id,))
+    order = cur.fetchone()
+    if not order:
+        conn.close()
+        return "❌ Заказ не найден или уже выполнен"
+
+    litres = order["Литры"] or 0
+    fuel_type = order["Топливо"]
+
+    # Получаем цену топлива
+    cur.execute("SELECT price_per_litre FROM fuel WHERE fuel_type=?", (fuel_type,))
+    fuel_row = cur.fetchone()
+    price_per_litre = fuel_row["price_per_litre"] if fuel_row else 0
+    amount_rub = round(litres * price_per_litre, 2)
+
+    # --- Вычисляем баллы ---
+    payment = order["Оплата"]
+    points_earned = 0
+    if payment and payment not in ["pending", "pending_full_tank"]:
+        cur.execute("""
+            SELECT points_per_litre
+            FROM fuel_bonus
+            WHERE fuel_type=? AND payment_method=?
+        """, (fuel_type, payment))
+        row = cur.fetchone()
+        points_per_litre = row["points_per_litre"] if row else 0
+        points_earned = round(litres * points_per_litre, 2)
+
+    # --- Обновляем историю ---
+    cur.execute("""
+        UPDATE history
+        SET status='done',
+            shift_id=?,
+            Рубли=?,
+            points=?
+        WHERE "№"=?
+    """, (shift["id"], amount_rub, points_earned, order_id))
+
+    # --- Начисляем баллы пользователю ---
+    if points_earned > 0:
+        cur.execute("UPDATE users SET bonus = bonus + ? WHERE telegram_id=?", (points_earned, order["Telegram_ID"]))
+
+    # --- Создаем уведомление ---
+    cur.execute("""
+        INSERT INTO notifications (
+            telegram_id, message, type, order_id, fuel, litres, amount_rub, points, created_at
+        ) VALUES (?, ?, 'order_done', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    """, (
+        order["Telegram_ID"],
+        "Ваш заказ выполнен ✅",
+        order_id,
+        fuel_type,
+        litres,
+        amount_rub,
+        points_earned
+    ))
+
+    conn.commit()
+    conn.close()
+
+    print(f"💡 DEBUG: order_id={order_id}, litres={litres}, rub={amount_rub}, points={points_earned}, payment={payment}")
+
+    return redirect("/operator")
+
+
+@app.route("/operator/summary", methods=["GET", "POST"])
+def operator_summary():
+    if session.get("role") != "operator":
+        return "❌ Доступ запрещен", 403
+
+    summary = session.get("shift_summary")
+    if not summary:
+        return redirect("/operator")  # если данных нет, возвращаемся
+
+    if request.method == "POST":
+        telegram_id = session.get("telegram_id")  # сохраняем telegram_id
+        # очищаем все данные оператора
+        for key in ["role", "operator_id", "station", "shift_summary"]:
+            session.pop(key, None)
+        # ставим pending_operator, чтобы оператор смог выбрать себя
+        session["pending_operator"] = telegram_id
+        return redirect("/operator/login")
+
+    return render_template("shift_summary.html", summary=summary)
+
+
+
+
+
+
+
+
+
+
+#-----------ИСТОРИЯ-------------------------
+
+
+
+@app.route("/history")
+def history():
+    if "telegram_id" not in session:
+        return redirect("/")
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # --- Выборка заявок ---
+    if session.get("is_admin"):
+        # Админ видит все заявки, лимит 50 последних
+        cur.execute("SELECT * FROM history ORDER BY Дата DESC LIMIT 50")
+    else:
+        # Обычный пользователь видит только свои заявки, лимит 50
+        cur.execute(
+            "SELECT * FROM history WHERE Telegram_ID=? ORDER BY rowid DESC LIMIT 50",
+            (session["telegram_id"],)
+        )
+
+    rows = [dict(row) for row in cur.fetchall()]
+
+    # --- Словарь для перевода оплаты ---
+    PAYMENT_NAMES = {
+        "cash": "💵 Наличные",
+        "card": "💳 Карта",
+        "bonus": "🎁 Баллами",
+        "pending_full_tank": "⛽ Полный бак (ожидание)",
+        "pending": "⏳ В обработке"
+    }
+
+    # --- Словарь названий станций ---
+    STATION_NAMES = {
+        "station_1": "Южное шоссе 129",
+        "station_2": "Южное шоссе 12/2",
+        "station_3": "Лесная 66А",
+        "station_4": "Борковская 72/1"
+    }
+
+    for row in rows:
+        # --- Сохраняем оригинальный код оплаты ---
+        payment_code = row.get("Оплата")
+
+        # --- Расчёт баллов ---
+        litres = row.get("Литры") or 0
+        cur.execute("""
+            SELECT points_per_litre
+            FROM fuel_bonus
+            WHERE fuel_type=? AND payment_method=?
+        """, (row["Топливо"], payment_code))
+        result = cur.fetchone()
+        points_per_litre = result["points_per_litre"] if result else 0
+        row["Баллы"] = round(litres * points_per_litre, 2)
+
+        # --- Перевод оплаты в русский текст ---
+        row["Оплата"] = PAYMENT_NAMES.get(payment_code, payment_code)
+
+        # --- Перевод кода станции в название ---
+        row["Станция"] = STATION_NAMES.get(row.get("Адрес"), row.get("Адрес"))
+
+    conn.close()
+
+    return render_template(
+        "history.html",
+        rows=rows,
+        is_admin=session.get("is_admin", False)
+    )
+
+
+
+@app.route("/history/export")
+def export_history():
+    if "user_id" not in session:
+        return redirect("/")
+
+    if not session.get("is_admin"):
+        return "❌ Доступ запрещен", 403
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    df = pd.read_sql_query("SELECT * FROM history ORDER BY Дата DESC", conn)
+    conn.close()
+
+    # --- Справочники ---
+    PAYMENT_NAMES = {
+        "cash": "Наличные",
+        "card": "Карта",
+        "bonus": "Баллами"
+    }
+
+    # --- Преобразования ---
+    if "Адрес" in df.columns:
+        df["Адрес"] = df["Адрес"].map(lambda x: STATION_NAMES.get(x, x))
+
+    if "Оплата" in df.columns:
+        df["Оплата"] = df["Оплата"].map(lambda x: PAYMENT_NAMES.get(x, x))
+
+    # Убираем None → "-"
+    df = df.fillna("-")
+
+    # --- Экспорт ---
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='История')
+
+    output.seek(0)
+
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name="history.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+@app.route("/my_points")
+def my_points():
+    if "telegram_id" not in session:
+        return redirect("/")
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Получаем бонусы пользователя
+    cur.execute("SELECT bonus FROM users WHERE telegram_id=?", (session["telegram_id"],))
+    user = cur.fetchone()
+    user_bonus = user["bonus"] if user else 0
+
+    # Получаем все баллы за топливо
+    cur.execute("SELECT fuel_type, payment_method, points_per_litre FROM fuel_bonus")
+    rows = cur.fetchall()
+
+    # Формируем структуру: fuel -> {cash: X, card: Y}
+    fuel_bonus = {}
+    for row in rows:
+        fuel = row["fuel_type"]
+        method = row["payment_method"]
+        points = row["points_per_litre"]
+        if fuel not in fuel_bonus:
+            fuel_bonus[fuel] = {"cash": 0, "card": 0}
+        if method.lower() in ["cash", "нал", "наличные"]:
+            fuel_bonus[fuel]["cash"] = points
+        else:
+            fuel_bonus[fuel]["card"] = points
+
+    conn.close()
+    return render_template(
+        "my_points.html",
+        user_bonus=user_bonus,
+        fuel_bonus=fuel_bonus
+    )
+
+
+
+
+
+
+
+
+
+
+
+#---------------АДМИНСКИЕ ФИШКИ-------------------------------
+
+@app.route("/admin/set_bonus", methods=["GET", "POST"])
+def set_bonus():
+    if not session.get("is_admin", False):
+        return "❌ Доступ запрещен", 403
+
+    fuels = ["Бензин", "Газ"]
+    payments = ["cash", "card"]
+    payments_ru = {"cash": "💵 Наличные", "card": "💳 Карта"}  # русские подписи
+
+    conn = get_db()
+    cur = conn.cursor()
+    # Создаем таблицу бонусов, если нет
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS fuel_bonus (
+            fuel_type TEXT NOT NULL,
+            payment_method TEXT NOT NULL,
+            points_per_litre REAL DEFAULT 0,
+            PRIMARY KEY (fuel_type, payment_method)
+        )
+    ''')
+    conn.commit()
+
+    if request.method == "POST":
+        fuel = request.form.get("fuel")
+        payment = request.form.get("payment_method")
+        points = float(request.form.get("points", 0))
+        cur.execute('''
+            INSERT INTO fuel_bonus (fuel_type, payment_method, points_per_litre)
+            VALUES (?, ?, ?)
+            ON CONFLICT(fuel_type, payment_method) DO UPDATE SET points_per_litre=excluded.points_per_litre
+        ''', (fuel, payment, points))
+        conn.commit()
+        flash(f"Баллы для {fuel} ({payments_ru[payment]}) обновлены: {points} балл/л")
+        return redirect("/dashboard")
+
+    # Текущие значения
+    cur.execute("SELECT * FROM fuel_bonus")
+    rows = cur.fetchall()
+    points = {}
+    for row in rows:
+        if row['fuel_type'] not in points:
+            points[row['fuel_type']] = {}
+        points[row['fuel_type']][row['payment_method']] = row['points_per_litre']
+    conn.close()
+
+    return render_template(
+        "set_bonus.html",
+        fuels=fuels,
+        payments=payments,
+        payments_ru=payments_ru,
+        points=points
+    )
+
+
+
+
+
+@app.route("/admin/add_operator", methods=["GET", "POST"])
+def add_operator():
+    if "user_id" not in session:
+        return redirect("/")
+
+    # Проверка на админа через сессию, а не БД
+    if not session.get("is_admin"):
+        return "❌ Доступ запрещен", 403
+
+    if request.method == "POST":
+        name = request.form.get("name")
+        phone = request.form.get("phone")
+        station = request.form.get("station")
+
+        # Получаем Telegram ID по станции
+        telegram_id = STATION_OPERATORS.get(STATION_NAMES.get(station, ""), None)
+        if telegram_id is None:
+            flash(f"Не найден Telegram ID для станции {station}")
+            return redirect("/admin/add_operator")
+
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO operators (name, phone, station, telegram_id) VALUES (?, ?, ?, ?)",
+            (name, phone, station, telegram_id)
+        )
+        conn.commit()
+        conn.close()
+
+        flash(f"Оператор {name} успешно добавлен! Telegram ID: {telegram_id}")
+        return redirect("/dashboard")
+
+    return render_template("add_operator.html", stations=STATION_NAMES)
+
+
+
+
+
+@app.route("/admin/operators", methods=["GET", "POST"])
+def list_operators():
+    if "user_id" not in session or not session.get("is_admin"):
+        return "❌ Доступ запрещен", 403
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # --- УДАЛЕНИЕ ОПЕРАТОРА ---
+    if request.method == "POST":
+        op_id = request.form.get("operator_id")
+        action = request.form.get("action")
+        if action == "delete":
+            cur.execute("DELETE FROM operators WHERE id = ?", (op_id,))
+            conn.commit()
+
+    # --- ПОЛУЧАЕМ ВСЕХ ОПЕРАТОРОВ ---
+    cur.execute("SELECT * FROM operators")
+    operators = cur.fetchall()  # словари благодаря row_factory
+
+    # --- ПОЛУЧАЕМ ВСЕ АКТИВНЫЕ СМЕНЫ ---
+    cur.execute("SELECT * FROM shifts WHERE active = 1")
+    shifts = cur.fetchall()  # словари
+
+    conn.close()
+
+    return render_template(
+        "operators.html",
+        operators=operators,
+        station_names=STATION_NAMES,
+        shifts=shifts
+    )
+
+
+
+# --- Изменение цены топлива ---
+@app.route("/admin/set_prices", methods=["GET", "POST"])
+def set_prices():
+    if "user_id" not in session or not session.get("is_admin", False):
+        return "❌ Доступ запрещен", 403
+
+    fuels = ["Бензин", "Газ"]
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT fuel_type, price_per_litre FROM fuel")
+    rows = cur.fetchall()
+    conn.close()
+
+    prices = {row["fuel_type"]: row["price_per_litre"] for row in rows}
+
+    if request.method == "POST":
+        fuel = request.form.get("fuel")
+        price = float(request.form.get("price"))
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("UPDATE fuel SET price_per_litre = ? WHERE fuel_type = ?", (price, fuel))
+        conn.commit()
+        conn.close()
+        flash(f"Цена для {fuel} обновлена: {price} ₽/л")
+        return redirect("/dashboard")
+
+    return render_template("set_prices.html", fuels=fuels, prices=prices)
+import random
+EXIT_MESSAGES = [
+    "Топливо ждёт, а ты — приходи снова!",
+    "Бензин на месте, а ты — всегда можешь заглянуть!",
+    "Бак пуст? Не переживай, мы тут всегда рядом!",
+    "Ты вышел, а бензин всё ещё ждёт тебя!",
+    "Даже колонки отдыхают — возвращайся скоро!"
+]
+
+@app.route("/logout")
+def exit_page():
+    message = random.choice(EXIT_MESSAGES)
+    return render_template("logout.html", message=message)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000, debug=True)
