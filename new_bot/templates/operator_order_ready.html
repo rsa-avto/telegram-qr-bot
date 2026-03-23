@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Заказ №{{ order["№"] }}</title>
+<style>
+body { font-family: Arial; text-align:center; padding:50px; background:#f7f7f7; }
+.card { background:white; padding:30px; border-radius:10px; display:inline-block; }
+button { padding:10px 20px; font-size:16px; border:none; border-radius:5px; background:#4CAF50; color:white; cursor:pointer; }
+button:hover { background:#45a049; }
+</style>
+</head>
+<body>
+<div class="card">
+    <h1>Заказ №{{ order["№"] }}</h1>
+
+    {% set payment_labels = {'card': 'Карта', 'cash': 'Наличка', 'bonus': 'Бонусы'} %}
+    <p>Способ оплаты: {{ payment_labels.get(order["Оплата"], order["Оплата"]) }}</p>
+
+    <p>Топливо: {{ order["Топливо"] }}</p>
+    <p>Литры: {{ order["Литры"]|round(2) }}</p>
+
+    <form method="post" action="/operator/accept_payment/{{ order['№'] }}">
+        <button type="submit">✅ Принял оплату</button>
+    </form>
+</div>
+</body>
+</html>

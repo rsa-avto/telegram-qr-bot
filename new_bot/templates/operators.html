@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Список операторов</title>
+
+<style>
+body { font-family: Arial, sans-serif; padding:10px; }
+h1 { text-align:center; }
+
+table { width:100%; border-collapse:collapse; margin-top:20px; }
+th, td { border:1px solid #ccc; padding:10px; text-align:center; }
+a { text-decoration:none; color:#4CAF50; }
+a:hover { text-decoration:underline; }
+button { padding:8px 12px; font-size:14px; border-radius:5px; border:none; background:#4CAF50; color:white; }
+button:hover { background:#45a049; }
+.active { color:green; font-weight:bold; }
+.inactive { color:red; font-weight:bold; }
+@media(max-width:500px) { th, td { font-size:14px; padding:5px; } }
+</style>
+</head>
+
+<body>
+
+<h1>Список операторов</h1>
+
+<p>
+    <a href="/dashboard">Дашборд</a> |
+    <a href="/admin/add_operator"><button>➕ Добавить оператора</button></a> |
+    <a href="/logout">Выйти</a>
+</p>
+
+{% if operators %}
+<table>
+<tr>
+    <th>ID</th>
+    <th>Имя</th>
+    <th>Телефон</th>
+    <th>Станция</th>
+    <th>Статус</th>
+    <th>Действия</th>
+</tr>
+
+{% for op in operators %}
+<tr>
+    <td>{{ op['id'] }}</td>
+    <td>{{ op['name'] }}</td>
+    <td>{{ op['phone'] }}</td>
+    <td>{{ station_names.get(op['station'], op['station']) }}</td>
+
+    <!-- 🔥 СТАТУС ЧЕРЕЗ SHIFTS -->
+    <td>
+        {% set active_shift = shifts | selectattr("operator_id", "equalto", op['id']) | list %}
+        {% if active_shift %}
+            <span class="active">🟢 На смене</span><br>
+            <small>Начало: {{ active_shift[0]['start_time'] }}</small>
+        {% else %}
+            <span class="inactive">🔴 Не работает</span>
+        {% endif %}
+    </td>
+
+    <td>
+        <form method="post" style="display:inline;">
+            <input type="hidden" name="operator_id" value="{{ op['id'] }}">
+            <input type="hidden" name="action" value="delete">
+            <button onclick="return confirm('Удалить оператора?')" title="Удалить">🗑</button>
+        </form>
+    </td>
+</tr>
+{% endfor %}
+
+</table>
+{% else %}
+<p>Нет операторов</p>
+{% endif %}
+
+</body>
+</html>

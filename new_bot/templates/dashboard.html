@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Личный кабинет</title>
+<style>
+body { font-family: Arial, sans-serif; padding: 10px; line-height: 1.5; background:#f7f7f7; }
+h1,h2 { text-align: center; }
+form { max-width: 400px; margin: 0 auto; background:white; padding:15px; border-radius:10px; box-shadow: 0 2px 6px rgba(0,0,0,0.1); }
+input, select, button { width: 100%; padding:10px; margin:5px 0 15px 0; font-size:16px; border-radius:5px; border:1px solid #ccc; box-sizing:border-box; }
+button { background-color:#4CAF50; color:white; border:none; cursor:pointer; }
+button:hover { background-color:#45a049; }
+table { width: 100%; border-collapse: collapse; margin-top:20px; }
+table, th, td { border: 1px solid #ccc; }
+th, td { padding:10px; text-align:center; }
+a { text-decoration:none; color:#4CAF50; }
+a:hover { text-decoration:underline; }
+.card { max-width:400px; margin:20px auto; background:white; padding:20px; border-radius:10px; text-align:center; box-shadow:0 2px 6px rgba(0,0,0,0.1); }
+.notification, .flash-message { max-width:400px; margin:10px auto; padding:15px; border-radius:10px; text-align:center; transition: opacity 0.5s ease; }
+.notification { background:#e8f5e9; }
+.flash-message.error { background:#ffebee; color:#c62828; }
+.flash-message.success { background:#e8f5e9; color:#2e7d32; }
+@media(max-width:500px) { h1,h2 { font-size:1.5em; } input, select, button { font-size:14px; padding:8px; } }
+</style>
+</head>
+<body>
+
+<h1>Добро пожаловать!</h1>
+
+<!-- Flash уведомления -->
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    {% for category, message in messages %}
+      <div class="flash-message {{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endif %}
+{% endwith %}
+
+<!-- Уведомления о выполненных заправках -->
+<div id="notifications">
+{% if notifications %}
+    {% for n in notifications %}
+        <div class="notification">
+            ✅ Ваша заправка ({{ n.fuel }}, {{ n.litres }} л) выполнена!<br>
+            💰 Сумма: {{ "%.2f"|format(n.amount_rub or 0) }} ₽<br>
+            Вам начислено: <strong>{{ n.points }} баллов</strong>
+        </div>
+    {% endfor %}
+{% endif %}
+</div>
+
+{% if is_admin %}
+<h2>⚙️ Админские действия</h2>
+<p style="text-align:center">
+    <a href="/admin/set_prices"><button>Изменить цены топлива</button></a>
+    <a href="/admin/set_bonus"><button>Изменить баллы за литр</button></a>
+    <a href="/admin/operators"><button>Операторы</button></a>
+</p>
+<hr>
+{% endif %}
+
+<div style="text-align:center; margin-top:30px; display:flex; flex-wrap:wrap; justify-content:center; gap:10px;">
+    <a href="/logout" class="btn nav-btn">🚪 Выйти</a>
+    <a href="/history" class="btn nav-btn">📜 История</a>
+
+    <a href="/my_points" class="btn primary-btn">⭐ Мои баллы</a>
+    <a href="/prices" class="btn primary-btn">💰 Цены на топливо</a>
+</div>
+
+<style>
+/* Общий стиль кнопок */
+.btn {
+    display: inline-block;
+    padding: 12px 25px;
+    text-decoration: none;
+    font-family: Arial, sans-serif;
+    font-weight: 500;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+    box-sizing: border-box;
+    text-align: center;
+}
+
+/* Обычные навигационные кнопки */
+.nav-btn {
+    color: #1F2937;
+    border: 2px solid #1F2937;
+    background-color: #fff;
+}
+
+.nav-btn:hover {
+    background-color: #1F2937;
+    color: #fff;
+}
+
+/* Основные кнопки (primary) */
+.primary-btn {
+    color: #fff;
+    background-color: #10B981; /* мягкий зелёный */
+    border: 2px solid #10B981;
+}
+
+.primary-btn:hover {
+    background-color: #059669; /* чуть темнее при наведении */
+    border-color: #059669;
+    color: #fff;
+}
+
+/* Для мобильных устройств — кнопки растягиваются и отступы меньше */
+@media(max-width:500px) {
+    .btn {
+        width: 100%;
+        padding: 10px;
+    }
+}
+</style>
+</div>
+
+
+
+<h2>Сделать новый заказ</h2>
+<form method="post">
+    <label>Станция:</label>
+    <select name="station" required>
+        {% for code, name in stations.items() %}
+        <option value="{{ code }}">{{ name }}</option>
+        {% endfor %}
+    </select>
+
+    <label>Топливо:</label>
+    <select name="fuel" required>
+        {% for fuel in fuels %}
+        <option value="{{ fuel }}">{{ fuel }}</option>
+        {% endfor %}
+    </select>
+
+    <label>Тип ввода:</label>
+    <select name="amount_type" id="amount_type" required>
+        <option value="rub">₽</option>
+        <option value="litres">Литры</option>
+        <option value="full_tank">Полный бак</option>
+    </select>
+
+    <label id="amount_label">Сумма/литры:</label>
+    <input type="number" name="amount" id="amount_field" required min="1" step="any">
+
+    <button type="submit">Продолжить</button>
+</form>
+
+<script>
+// Скрываем/показываем поле Сумма/литры в зависимости от выбора
+const amountType = document.getElementById('amount_type');
+const amountField = document.getElementById('amount_field');
+const amountLabel = document.getElementById('amount_label');
+
+function toggleAmountField() {
+    if(amountType.value === 'full_tank') {
+        amountField.style.display = 'none';
+        amountLabel.style.display = 'none';
+        amountField.value = '';
+        amountField.removeAttribute('required');
+    } else {
+        amountField.style.display = 'block';
+        amountLabel.style.display = 'block';
+        amountField.setAttribute('required', '');
+    }
+}
+
+toggleAmountField();
+amountType.addEventListener('change', toggleAmountField);
+
+// Авто-скрытие flash сообщений через 5 секунд
+window.addEventListener('DOMContentLoaded', () => {
+    const flashes = document.querySelectorAll('.flash-message');
+    flashes.forEach(flash => {
+        setTimeout(() => {
+            flash.style.opacity = '0';
+            setTimeout(() => flash.remove(), 500);
+        }, 5000);
+    });
+
+    // Авто-скрытие старых уведомлений через 10 секунд
+    const notifications = document.getElementById('notifications');
+    if(notifications) {
+        setTimeout(() => {
+            notifications.style.opacity = 0;
+            setTimeout(() => { notifications.remove(); }, 500);
+        }, 10000);
+    }
+});
+</script>
+
+</body>
+</html>

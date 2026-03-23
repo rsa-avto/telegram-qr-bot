@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Подтвердите заказ</title>
+<style>
+body { font-family: Arial, sans-serif; padding:10px; background:#f7f7f7; }
+h1 { text-align:center; }
+.card { max-width:400px; margin:20px auto; background:white; padding:15px; border-radius:10px; }
+label, p { display:block; margin:10px 0; font-size:16px; }
+input[type="number"], select, button { width:100%; padding:10px; margin:5px 0 15px 0; font-size:16px; border-radius:5px; border:1px solid #ccc; box-sizing:border-box; }
+button { background:#4CAF50; color:white; border:none; }
+button:hover { background:#45a049; cursor:pointer; }
+.result { background:#e8f5e9; padding:10px; border-radius:8px; margin-top:10px; text-align:center; font-size:18px; }
+</style>
+</head>
+<body>
+
+<h1>Подтвердите заказ</h1>
+
+<div class="card">
+    <p><strong>Станция:</strong> {{ station_name }}</p>
+    <p><strong>Топливо:</strong> {{ order["Топливо"] }}</p>
+    <p><strong>Литры:</strong> {{ order["Литры"] }} л</p>
+    <p><strong>К оплате:</strong> {{ rub|round(2) }} ₽</p>
+<p><strong>Ваш баланс:</strong> ⭐ {{ user_bonus|round(2) }} баллов</p>
+
+<div class="result">
+    🚗 Вы получите: <strong>{{ order["Литры"]|round(2) }} л</strong><br>
+    💰 К оплате: <strong>{{ rub|round(2) }} ₽</strong>
+</div>
+
+<form method="post">
+    <label>Выберите способ оплаты:</label>
+    <select name="payment_method" required>
+        <option value="cash">💵 Наличные</option>
+        <option value="card">💳 Карта</option>
+
+        {% if user_bonus >= rub %}
+            <option value="bonus">🎁 Баллами</option>
+        {% else %}
+            <option value="bonus" disabled>❌ Баллами (недостаточно)</option>
+        {% endif %}
+    </select>
+
+    <button type="submit">Подтвердить оплату</button>
+</form>
+</div>
+
+<p style="text-align:center">
+    <a href="/dashboard">← Назад</a>
+</p>
+
+</body>
+</html>

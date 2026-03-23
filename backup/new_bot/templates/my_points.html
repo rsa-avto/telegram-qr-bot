@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Мои баллы</title>
+<style>
+    /* Общий фон на весь экран */
+    body, html {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        font-family: Arial, sans-serif;
+        background-color: #f0fdf4; /* светло-зеленый фон */
+    }
+
+    /* Вся панель */
+    .panel {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 20px;
+        box-sizing: border-box;
+    }
+
+    /* Кнопка назад */
+    .back-btn {
+        background-color: #10B981;
+        color: white;
+        border: none;
+        padding: 12px 24px;
+        border-radius: 6px;
+        font-size: 16px;
+        margin-bottom: 20px;
+        cursor: pointer;
+        width: 90%;
+        max-width: 400px;
+    }
+
+    h2 {
+        font-size: 1.5em;
+        text-align: center;
+        margin: 0;
+    }
+
+    h3 {
+        margin-top: 30px;
+        font-size: 1.2em;
+        text-align: center;
+    }
+
+    /* Карточки топлива */
+    .fuel-card {
+        border: 1px solid #ddd;
+        border-radius: 10px;
+        padding: 15px;
+        background-color: white;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        width: 95%;
+        max-width: 600px;
+        margin: 10px auto;
+        display: flex;
+        justify-content: space-between;
+        font-size: 1em;
+    }
+
+    .fuel-name {
+        font-weight: bold;
+        font-size: 1.1em;
+    }
+
+    /* Адаптив для мобильных */
+    @media (max-width: 480px) {
+        h2 { font-size: 1.3em; }
+        h3 { font-size: 1.1em; }
+        .fuel-card { font-size: 0.95em; padding: 12px; }
+        .back-btn { font-size: 14px; padding: 10px 16px; }
+    }
+</style>
+</head>
+<body>
+
+<div class="panel">
+    <button class="back-btn" onclick="window.history.back()">⬅ Назад</button>
+
+    <h2>Ваши текущие баллы:</h2>
+<div style="color: #10B981; font-size: 1.5em; margin-top: 5px;">
+    ⭐ {{ "%.2f"|format(user_bonus) }}
+</div>
+
+    <h3>Баллы за топливо</h3>
+
+    {% for fuel, bonuses in fuel_bonus.items() %}
+    <div class="fuel-card">
+        <span class="fuel-name">{{ fuel }}</span>
+        <span>Наличные: <strong>{{ bonuses.cash }}</strong></span>
+        <span>Безналичные: <strong>{{ bonuses.card }}</strong></span>
+    </div>
+    {% endfor %}
+</div>
+
+</body>
+</html>

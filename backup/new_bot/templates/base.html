@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %}Мой сайт{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f6f8;
+            margin: 0;
+            padding: 0;
+            color: #333;
+        }
+        header {
+            background-color: #1E40AF;
+            color: white;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        main {
+            max-width: 900px;
+            margin: 30px auto;
+            padding: 20px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        }
+        footer {
+            text-align: center;
+            padding: 15px;
+            font-size: 14px;
+            color: #555;
+            margin-top: 50px;
+        }
+        a.button {
+            background-color: #1E40AF;
+            color: white;
+            padding: 10px 20px;
+            text-decoration: none;
+            border-radius: 6px;
+            transition: 0.3s;
+        }
+        a.button:hover {
+            background-color: #3749d3;
+        }
+    </style>
+</head>
+<body>
+<header>
+    <h1>Мой заправочный сервис</h1>
+    {% if session.get('telegram_id') %}
+        <a href="{{ url_for('my_points') }}" class="button">Мои баллы</a>
+    {% endif %}
+</header>
+
+<main>
+    {% block content %}
+    {% endblock %}
+</main>
+
+<footer>
+    &copy; 2026 Мой заправочный сервис
+</footer>
+</body>
+</html>

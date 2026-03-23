@@ -2195,7 +2195,11 @@ def start(message):
                 markup.add(types.InlineKeyboardButton("🔧 Ремонт авто", callback_data="rext"))
                 markup.add(types.InlineKeyboardButton("💼 Вакансии", callback_data="jobs"))
                 markup.add(types.InlineKeyboardButton("📩 Написать директору", url="https://t.me/Dagman42"))
+                bot.send_message(user_id,
+                    "⚡ Хотите заполниться без лагов? Жмите сюда  /site")
 
+
+                bot.send_message(user_id, "📋 Всё что вам нужно здесь", reply_markup=markup)
                 if user_id == DIRECTOR_ID:
                     markup.add(types.InlineKeyboardButton("💰 Сменить цену топлива", callback_data="admin_set_price"))
                     markup.add(types.InlineKeyboardButton("🎁 Сменить бонусы", callback_data="admin_set_bonus"))
@@ -2316,7 +2320,28 @@ def handle_admin_callbacks(call):
                 print(f"Ошибка 7678: {e}")
     except Exception as e:
         print(f"[admin_callbacks] Ошибка: {e}")
+@bot.callback_query_handler(func=lambda call: call.data == "fast_site")
+def fast_site(call):
+    telegram_id = call.from_user.id
 
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE telegram_id = ?", (telegram_id,))
+    user = cur.fetchone()
+    if not user:
+        bot.send_message(call.message.chat.id, "❌ Вы не зарегистрированы")
+        conn.close()
+        return
+    user_id = user[0]
+
+    token = str(uuid.uuid4())
+    cur.execute("INSERT INTO login_tokens (token, user_id) VALUES (?, ?)", (token, user_id))
+    conn.commit()
+    conn.close()
+
+    link = f"http://{BASE_URL}:10000/login?telegram_id={telegram_id}&token={token}"
+    bot.send_message(call.message.chat.id,
+                     f"🌐 Быстрый вход в личный кабинет без лагов:\n{link}")
 @bot.callback_query_handler(func=lambda call: call.data == "reschedule_rental")
 def handle_reschedule_rental(call):
     try:

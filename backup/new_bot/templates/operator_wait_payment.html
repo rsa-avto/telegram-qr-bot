@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Ожидание оплаты</title>
+<style>
+body { font-family: Arial; text-align:center; padding:50px; background:#f7f7f7; }
+.card { background:white; padding:30px; border-radius:10px; display:inline-block; }
+</style>
+</head>
+<body>
+<div class="card">
+    <h1>Ожидание оплаты</h1>
+    <p>Заказ №{{ order["№"] }}</p>
+    <p>Клиент выбирает способ оплаты...</p>
+    <p>Топливо: {{ order["Топливо"] }}</p>
+    <p>Литры: {{ order["Литры"]|round(2) }}</p>
+</div>
+
+<script>
+const operatorTelegramId = {{ operator_telegram_id|tojson }};
+const evtSource = new EventSource(`/notifications/stream?telegram_id=${operatorTelegramId}`);
+
+evtSource.onmessage = function(event) {
+    const data = JSON.parse(event.data);
+    console.log("Получено уведомление:", data);
+
+    if(data.order_id == {{ order['№'] }}){
+
+        if(data.type === "waiting_payment"){
+            window.location.href = "/operator/order_ready/{{ order['№'] }}";
+        }
+
+        if(data.type === "bonus_paid"){
+            window.location.href = "/operator/done_order/{{ order['№'] }}";
+        }
+    }
+};
+</script>
+</body>
+</html>

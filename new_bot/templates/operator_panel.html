@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Панель оператора</title>
+<style>
+body { font-family: Arial, sans-serif; padding:10px; background:#f7f7f7; }
+h1, h2 { margin-bottom: 15px; }
+button { padding:10px 15px; font-size:14px; border:none; border-radius:5px; cursor:pointer; }
+.start { background:#4CAF50; color:white; }
+.stop { background:#f44336; color:white; }
+
+.order-card { border:1px solid #ccc; padding:12px; margin:10px 0; border-radius:8px; background:white; transition:0.3s; }
+.new-order { background:#d1fae5 !important; animation: highlight 2s ease; }
+@keyframes highlight { 0% { background:#a7f3d0; } 100% { background:white; } }
+
+.actions { float:right; margin-top:10px; }
+.clearfix::after { content: ""; clear: both; display: table; }
+p { margin:5px 0; }
+.summary { font-weight:bold; margin:10px 0; }
+input { padding:5px; margin-right:5px; width:80px; }
+</style>
+</head>
+<body>
+
+<div class="clearfix">
+    <h1>⛽ Панель оператора — {{ STATION_NAMES.get(station, station) }}</h1>
+    <div class="actions">
+    {% if shift %}
+        <form method="post">
+            <button type="submit" name="action" value="end" class="stop">❌ Закончить смену</button>
+        </form>
+    {% else %}
+        <form method="post">
+            <button type="submit" name="action" value="start" class="start">▶️ Начать смену</button>
+        </form>
+    {% endif %}
+    </div>
+</div>
+
+{% if shift %}
+<p>Смена активна с {{ shift.start_time }}</p>
+{% else %}
+<p>Смена не начата</p>
+{% endif %}
+
+<hr>
+
+{% set PAYMENT_RU = {'cash':'💵 Наличные', 'card':'💳 Карта', 'bonus':'🎁 Баллами'} %}
+
+<h2>Новые заказы</h2>
+<div id="orders-container">
+{% if orders %}
+    {% for o in orders %}
+    <div class="order-card" id="order-{{ o['№'] }}">
+        <p><strong>Топливо:</strong> {{ o['Топливо'] }}</p>
+        <p><strong>Оплата:</strong> {{ PAYMENT_RU.get(o['Оплата'], o['Оплата']) }}</p>
+        <p><strong>Литры:</strong> {{ o['Литры'] or 0 }}</p>
+        <p><strong>Сумма:</strong> {{ o['Рубли'] or 0 }} ₽</p>
+        <p><strong>Время:</strong> {{ o['Дата'][-8:-3] }}</p>
+
+        {% if o['status'] == 'pending' %}
+            <form method="post" action="/operator/complete/{{ o['№'] }}">
+                <button>✅ Заправил</button>
+            </form>
+        {% elif o['status'] == 'done' %}
+            <p>✅ Выполнено</p>
+        {% else %}
+            <p>Статус неизвестен</p>
+        {% endif %}
+    </div>
+    {% endfor %}
+{% else %}
+<p>Нет новых заказов</p>
+{% endif %}
+</div>
+
+<hr>
+
+<h2>Заказы "Полный бак"</h2>
+<div id="fulltank-container">
+{% if full_tank_orders %}
+    {% for o in full_tank_orders %}
+    <div class="order-card" id="full-{{ o['№'] }}">
+        <p><strong>Топливо:</strong> {{ o['Топливо'] }}</p>
+        <p><strong>Время:</strong> {{ o['Дата'][-8:-3] }}</p>
+
+        <form action="/operator/start_full_tank/{{ o['№'] }}" method="post">
+            <button>▶️ Начать заправку</button>
+        </form>
+    </div>
+    {% endfor %}
+{% else %}
+<p>Нет заказов "Полный бак"</p>
+{% endif %}
+</div>
+
+<hr>
+<p><a href="/logout">Выйти</a></p>
+
+<audio id="sound" src="/static/new_order.mp3" preload="auto"></audio>
+
+<script>
+async function refreshOrders() {
+    try {
+        const res = await fetch("/operator/orders_json");
+        const data = await res.json();
+
+        // --- Обычные заказы ---
+        const ordersContainer = document.getElementById("orders-container");
+        data.orders.forEach(o => {
+            if (!document.getElementById("order-" + o.id)) {
+                const div = document.createElement("div");
+                div.className = "order-card new-order";
+                div.id = "order-" + o.id;
+                div.innerHTML = `
+                    <p><strong>Топливо:</strong> ${o.fuel}</p>
+                    <p><strong>Оплата:</strong> ${o.payment}</p>
+                    <p><strong>Литры:</strong> ${o.litres}</p>
+                    <p><strong>Сумма:</strong> ${o.rub} ₽</p>
+                    <p><strong>Время:</strong> ${o.date.slice(-8,-3)}</p>
+                    <form method="post" action="/operator/complete/${o.id}">
+                        <button>✅ Заправил</button>
+                    </form>
+                `;
+                ordersContainer.prepend(div);
+                document.getElementById("sound").play().catch(()=>{});
+            }
+        });
+
+        // --- Заказы "полный бак" ---
+        const fullContainer = document.getElementById("fulltank-container");
+        data.full_tank_orders.forEach(o => {
+            if (!document.getElementById("full-" + o.id)) {
+                const div = document.createElement("div");
+                div.className = "order-card new-order";
+                div.id = "full-" + o.id;
+
+                let inner = `<p><strong>Топливо:</strong> ${o.fuel}</p>
+                             <p><strong>Время:</strong> ${o.date.slice(-8,-3)}</p>`;
+
+                inner += `<form method="post" action="/operator/start_full_tank/${o.id}">
+                            <button>▶️ Начать заправку</button>
+                          </form>`;
+
+                div.innerHTML = inner;
+                fullContainer.prepend(div);
+                document.getElementById("sound").play().catch(()=>{});
+            }
+        });
+
+    } catch (e) {
+        console.error("Ошибка обновления заказов:", e);
+    }
+}
+
+// Автообновление каждые 3 секунды
+setInterval(refreshOrders, 3000);
+refreshOrders();
+</script>
+<div style="position:fixed; bottom:10px; left:10px;">
+    <form action="/operator/change_pin" method="get">
+        <button type="submit" style="padding:8px 12px; font-size:14px; border-radius:5px; background:#ff9800; color:white; border:none;">
+            🔑 Сменить PIN
+        </button>
+    </form>
+</div>
+</body>
+</html>

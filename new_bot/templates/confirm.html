@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Подтверждение заказа</title>
+
+    <style>
+    body { font-family: Arial, sans-serif; padding:10px; background:#f7f7f7; }
+    h1 { text-align:center; }
+
+    .card {
+        max-width:400px;
+        margin:0 auto 15px auto;
+        background:white;
+        padding:15px;
+        border-radius:10px;
+    }
+
+    .result {
+        background:#e8f5e9;
+        padding:10px;
+        border-radius:8px;
+        margin-top:10px;
+        text-align:center;
+        font-size:18px;
+    }
+
+    form { max-width:400px; margin:0 auto; background:white; padding:15px; border-radius:10px; }
+
+    input, select, button {
+        width:100%;
+        padding:10px;
+        margin:5px 0 15px 0;
+        font-size:16px;
+        border-radius:5px;
+        border:1px solid #ccc;
+    }
+
+    button { background:#4CAF50; color:white; border:none; }
+    button:hover { background:#45a049; }
+
+    a { text-decoration:none; color:#4CAF50; }
+    a:hover { text-decoration:underline; }
+
+    @media(max-width:500px) {
+        input, select, button { font-size:14px; padding:8px; }
+    }
+    </style>
+</head>
+
+<body>
+
+<h1>Подтвердите заказ</h1>
+
+<div class="card">
+    <p><strong>Станция:</strong> {{ station_name }}</p>
+    <p><strong>Топливо:</strong> {{ order.fuel }}</p>
+    <p><strong>Ввод:</strong> {{ order.amount }} {{ "₽" if order.amount_type=="rub" else "л" }}</p>
+
+    <p><strong>Цена за литр:</strong> {{ price }} ₽</p>
+
+    <div class="result">
+        {% if order.amount_type == "rub" %}
+            🚗 Вы получите: <strong>{{ (order.amount | float / price) | round(2) }} л</strong>
+        {% else %}
+            💰 К оплате: <strong>{{ (order.amount | float * price) | round(2) }} ₽</strong>
+        {% endif %}
+    </div>
+</div>
+<p><strong>Ваш баланс:</strong> ⭐ {{ bonus | round(2) }} баллов</p>
+<form method="post">
+    <label>Способ оплаты:</label>
+    <select name="payment_method" required>
+    <option value="cash">💵 Наличные</option>
+    <option value="card">💳 Карта</option>
+
+    {% if bonus >= (order.amount | float * price if order.amount_type == "litres" else order.amount | float) %}
+        <option value="bonus">🎁 Баллами</option>
+    {% else %}
+        <option value="bonus" disabled>❌ Баллами (недостаточно)</option>
+    {% endif %}
+</select>
+
+    <button type="submit">Подтвердить</button>
+</form>
+
+<p style="text-align:center">
+    <a href="/dashboard">← Назад</a>
+</p>
+
+</body>
+</html>

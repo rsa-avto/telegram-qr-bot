@@ -14,16 +14,14 @@ WORKDIR /app
 
 # зависимости python
 COPY requirements.txt /app/
-
 RUN pip install --upgrade pip certifi
 RUN pip install --no-cache-dir -r requirements.txt
 
 # копируем код
 COPY . /app/
 
-EXPOSE 8000
+# порт для сайта
+EXPOSE 10000
 
-CMD ["python", "bot.py"]
-
-
+# запускаем только main.py (бот + Flask)
 CMD ["python", "main.py"]

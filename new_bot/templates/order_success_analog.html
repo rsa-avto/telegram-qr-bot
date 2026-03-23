@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Заказ выполнен!</title>
+<style>
+body {
+    font-family: 'Arial', sans-serif;
+    background: #f0f4f8;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+}
+
+.card {
+    background: white;
+    padding: 30px 40px;
+    border-radius: 12px;
+    box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+    text-align: center;
+    max-width: 400px;
+    width: 90%;
+    animation: fadeIn 0.8s ease-out;
+}
+
+h1 {
+    color: #4CAF50;
+    margin-bottom: 20px;
+}
+
+.info {
+    font-size: 18px;
+    margin: 10px 0;
+}
+
+.points {
+    font-size: 24px;
+    font-weight: bold;
+    color: #ff9800;
+    margin-top: 20px;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+button {
+    margin-top: 30px;
+    background: #4CAF50;
+    color: white;
+    border: none;
+    padding: 12px 25px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 16px;
+}
+
+button:hover {
+    background: #45a049;
+}
+</style>
+</head>
+<body>
+
+<div class="card">
+    <h1>✅ Заказ выполнен!</h1>
+
+    <p class="info">Топливо: <strong>{{ fuel }}</strong></p>
+    <p class="info">Литры: <strong>{{ litres }}</strong> л</p>
+    <p class="info">Сумма: <strong>{{ rub }}</strong> ₽</p>
+
+    {% if payment_method == "bonus" %}
+        <p class="info" style="color:#ff9800; font-weight:bold;">
+            🎁 Оплата баллами прошла успешно!
+        </p>
+    {% else %}
+        <p class="points">Баллы: <span id="points">0</span> ⭐</p>
+    {% endif %}
+
+    <form action="/dashboard">
+        <button>🏠 Вернуться в меню</button>
+    </form>
+</div>
+
+{% if payment_method != "bonus" %}
+<script>
+// Анимация подсчёта баллов
+const targetPoints = {{ points }};
+const pointsElem = document.getElementById("points");
+let currentPoints = 0;
+
+function animatePoints() {
+    if (currentPoints < targetPoints) {
+        currentPoints += Math.ceil(targetPoints / 50); // скорость увеличения
+        if (currentPoints > targetPoints) currentPoints = targetPoints;
+        pointsElem.textContent = currentPoints;
+        requestAnimationFrame(animatePoints);
+    }
+}
+
+animatePoints();
+</script>
+{% endif %}
+
+</body>
+</html>

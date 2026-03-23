@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ожидание завершения заправки</title>
+
+<style>
+body {
+    font-family: Arial, sans-serif;
+    text-align: center;
+    background: #f7f7f7;
+    padding: 50px 20px;
+}
+
+h1 {
+    color: #4CAF50;
+    font-size: 28px;
+    margin-bottom: 30px;
+}
+
+p {
+    font-size: 18px;
+    margin-bottom: 20px;
+}
+
+/* 🔥 Канистра */
+#canister {
+    width: 100px;
+    height: 100px;
+    margin: 0 auto 30px auto;
+    animation: floatRotate 2s ease-in-out infinite;
+}
+
+/* 🔥 Анимация */
+@keyframes floatRotate {
+    0% {
+        transform: rotate(0deg) translateY(0px);
+    }
+    50% {
+        transform: rotate(180deg) translateY(-10px);
+    }
+    100% {
+        transform: rotate(360deg) translateY(0px);
+    }
+}
+</style>
+</head>
+
+<body>
+
+<h1>⏳ Ожидаем завершения заправки...</h1>
+
+<img src="/static/canister.png" id="canister" alt="Загрузка">
+
+<p>Заказ №{{ order_id }}</p>
+<p>Пожалуйста, дождитесь подтверждения от оператора.</p>
+
+<script>
+const orderId = {{ order_id }};
+const telegramId = "{{ session['telegram_id'] }}";
+
+// SSE
+const evtSource = new EventSource(`/notifications/stream?telegram_id=${telegramId}`);
+
+evtSource.onmessage = function(event) {
+    const data = JSON.parse(event.data);
+    console.log("Получено уведомление:", data);
+
+    if (data.type === "order_done" && data.order_id == orderId) {
+        evtSource.close();
+
+        window.location.href = `/order_success_analog/${data.order_id}?fuel=${data.fuel}&litres=${data.litres}&rub=${data.rub}&points=${data.points}`;
+    }
+};
+</script>
+
+</body>
+</html>

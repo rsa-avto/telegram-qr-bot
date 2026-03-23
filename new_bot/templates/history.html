@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>История заказов</title>
+<style>
+    body { font-family: Arial, sans-serif; background:#f0f2f5; margin:0; padding:0; }
+
+    header {
+        background:#2563EB;
+        color:white;
+        padding:15px 20px;
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        flex-wrap:wrap;
+    }
+    header h1 { margin:0; font-size:20px; }
+
+    header nav { display:flex; flex-wrap:wrap; gap:10px; }
+    header nav a {
+        color:white;
+        text-decoration:none;
+        font-weight:600;
+        background:#1E40AF;
+        padding:10px 18px;
+        border-radius:8px;
+        transition:0.3s;
+        font-size:16px;
+        display:inline-block;
+    }
+    header nav a:hover { background:#3B82F6; }
+
+    .container { max-width:900px; margin:20px auto; padding:0 10px; }
+    .card { background:white; border-radius:10px; padding:15px 20px; margin-bottom:15px; box-shadow:0 2px 6px rgba(0,0,0,0.1); }
+    .card-header { display:flex; justify-content:space-between; flex-wrap:wrap; }
+    .card-header span { font-weight:600; }
+    .card-body { display:grid; grid-template-columns: repeat(auto-fit,minmax(100px,1fr)); gap:10px; margin-top:10px; }
+    .card-body div { background:#f7f7f7; border-radius:5px; padding:8px; text-align:center; font-size:14px; }
+
+    .status { font-weight:600; border-radius:5px; padding:5px 10px; display:inline-block; }
+    .pending { background:#ffecb3; color:#856404; }
+    .pending_full_tank { background:#b3e5fc; color:#01579b; }
+    .done { background:#c8e6c9; color:#256029; }
+
+    @media(max-width:500px) {
+        .card-body { grid-template-columns: 1fr 1fr; }
+        header nav a { font-size:14px; padding:8px 14px; }
+    }
+</style>
+</head>
+<body>
+
+<header>
+    <h1>История заказов</h1>
+    <nav>
+    <a href="/dashboard">🏠 Меню</a>
+    {% if is_admin %}
+    <a href="/history/export">📥 Скачать Excel</a>
+    {% endif %}
+    <a href="/logout">🚪 Выйти</a>
+</nav>
+</header>
+
+<div class="container">
+    {% if rows %}
+        {% for row in rows %}
+        <div class="card">
+            <div class="card-header">
+                <span>{{ row['Дата'] }}</span>
+                <span class="status {% if row['status']=='pending' %}pending{% elif row['status']=='pending_full_tank' %}pending_full_tank{% elif row['status']=='done' %}done{% endif %}">
+                    {% if row['status'] == 'pending' %}
+                        ⏳ В обработке
+                    {% elif row['status'] == 'pending_full_tank' %}
+                        ⛽ Полный бак (ожидание)
+                    {% elif row['status'] == 'done' %}
+                        ✅ Выполнено
+                    {% else %}
+                        {{ row['status'] }}
+                    {% endif %}
+                </span>
+            </div>
+            <div class="card-body">
+                <div><strong>Станция</strong><br>{{ row['Станция'] }}</div>
+                <div><strong>Топливо</strong><br>{{ row['Топливо'] }}</div>
+                <div><strong>Литры</strong><br>{{ "%.2f"|format(row['Литры'] or 0) }} л</div>
+                <div><strong>Рубли</strong><br>{{ "%.2f"|format(row['Рубли'] or 0) }} ₽</div>
+                <div><strong>Оплата</strong><br>{{ row['Оплата'] }}</div>
+                <div><strong>Баллы</strong><br>⭐ {{ "%.2f"|format(row.get('Баллы',0)) }}</div>
+            </div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <p style="text-align:center; margin-top:50px;">Нет заказов</p>
+    {% endif %}
+</div>
+
+</body>
+</html>

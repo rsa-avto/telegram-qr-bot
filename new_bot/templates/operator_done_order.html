@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Заказ №{{ order["№"] }} оплачен</title>
+<style>
+body { font-family: Arial; text-align:center; padding:50px; background:#f7f7f7; }
+.card { background:white; padding:30px; border-radius:10px; display:inline-block; }
+button { padding:10px 20px; font-size:16px; border:none; border-radius:5px; background:#4CAF50; color:white; cursor:pointer; }
+button:hover { background:#45a049; }
+</style>
+</head>
+<body>
+<div class="card">
+    {% if order["Оплата"] == "bonus" %}
+    <h1>🎁 Клиент уже оплатил заказ №{{ order["№"] }} баллами</h1>
+{% else %}
+    <h1>✅ Заказ №{{ order["№"] }} оплачен</h1>
+{% endif %}
+    <p>Топливо: {{ order["Топливо"] }}</p>
+    <p>Литры: {{ order["Литры"]|round(2) }}</p>
+    <form action="/operator" method="get">
+        <button type="submit">Продолжить</button>
+    </form>
+</div>
+</body>
+</html>

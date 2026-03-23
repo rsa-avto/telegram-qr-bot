@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Изменить цены топлива</title>
+<style>
+body { font-family: Arial, sans-serif; padding:10px; background:#f7f7f7; }
+h1 { text-align:center; }
+form { max-width:400px; margin:0 auto; background:white; padding:15px; border-radius:10px; }
+input, select, button { width:100%; padding:10px; margin:5px 0 15px 0; font-size:16px; border-radius:5px; border:1px solid #ccc; }
+button { background:#4CAF50; color:white; border:none; }
+button:hover { background:#45a049; }
+a { text-decoration:none; color:#4CAF50; }
+a:hover { text-decoration:underline; }
+@media(max-width:500px) { input, select, button { font-size:14px; padding:8px; } }
+</style>
+</head>
+<body>
+<h1>Изменить цены топлива</h1>
+<form method="post">
+    <label>Выберите топливо:</label>
+    <select name="fuel" required>
+        {% for fuel in fuels %}
+        <option value="{{ fuel }}">{{ fuel }}</option>
+        {% endfor %}
+    </select>
+
+    <label>Цена за литр (₽):</label>
+    <input type="number" name="price" id="price" min="0" step="any" required value="{{ prices[fuels[0]] }}">
+
+<script>
+const prices = {{ prices | tojson }};
+const fuelSelect = document.querySelector('select[name="fuel"]');
+const priceInput = document.getElementById('price');
+
+fuelSelect.addEventListener('change', () => {
+    const selectedFuel = fuelSelect.value;
+    priceInput.value = prices[selectedFuel] || 0;
+});
+</script>
+
+    <button type="submit">Обновить цену</button>
+</form>
+<p style="text-align:center"><a href="/dashboard">← Назад</a></p>
+</body>
+</html>

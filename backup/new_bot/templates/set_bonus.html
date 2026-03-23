@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Изменить бонусные баллы</title>
+<style>
+body { font-family: Arial, sans-serif; padding:10px; background:#f7f7f7; }
+h1,h2 { text-align:center; }
+form { max-width:400px; margin:0 auto; background:white; padding:15px; border-radius:10px; }
+input, select, button { width:100%; padding:10px; margin:5px 0 15px 0; font-size:16px; border-radius:5px; border:1px solid #ccc; }
+button { background:#4CAF50; color:white; border:none; }
+button:hover { background:#45a049; }
+table { width:100%; border-collapse:collapse; margin-top:20px; }
+th, td { border:1px solid #ccc; padding:10px; text-align:center; }
+a { text-decoration:none; color:#4CAF50; }
+a:hover { text-decoration:underline; }
+@media(max-width:500px) { input, select, button, th, td { font-size:14px; padding:5px; } }
+</style>
+</head>
+<body>
+<h1>Изменить бонусы</h1>
+<form method="post">
+    <label>Топливо:</label>
+    <select name="fuel" required>
+        {% for fuel in fuels %}
+            <option value="{{ fuel }}">{{ fuel }}</option>
+        {% endfor %}
+    </select>
+
+    <label>Способ оплаты:</label>
+    <select name="payment_method" required>
+        {% for p in payments %}
+            <option value="{{ p }}">{{ payments_ru[p] }}</option>
+        {% endfor %}
+    </select>
+
+    <label>Баллы за литр:</label>
+    <input type="number" name="points" min="0" step="any" required
+           value="{{ points.get(fuels[0], {}).get(payments[0], 0) }}">
+
+    <button type="submit">Обновить</button>
+</form>
+
+<h2>Текущие бонусы</h2>
+<table>
+<tr>
+    <th>Топливо</th>
+    <th>💵 Наличные</th>
+    <th>💳 Карта</th>
+</tr>
+{% for fuel in fuels %}
+<tr>
+    <td>{{ fuel }}</td>
+    <td>{{ points.get(fuel, {}).get('cash', 0) }}</td>
+    <td>{{ points.get(fuel, {}).get('card', 0) }}</td>
+</tr>
+{% endfor %}
+</table>
+<p style="text-align:center"><a href="/dashboard">← Назад</a></p>
+</body>
+</html>
