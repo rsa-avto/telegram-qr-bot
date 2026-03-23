@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 from flask import Flask, session, redirect, request, render_template, flash
 import sqlite3
 import os
@@ -3364,5 +3364,4 @@ def exit_page():
     return render_template("logout.html", message=message)
 
 if __name__ == "__main__":
->>>>>>> 155af79 (fix: мои правки)
-    app.run(host="0.0.0.0", port=10000, debug=True)
+    app.run(host="0.0.0.0", port=8000, debug=True)
