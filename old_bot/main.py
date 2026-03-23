@@ -15365,7 +15365,7 @@ def shutdown_scheduler(signum, frame):
     sys.exit(0)
 
 def run_flask():
-    app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=8000, debug=True)
 
 def start_scheduler():
     try:
