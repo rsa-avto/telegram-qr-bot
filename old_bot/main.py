@@ -45,7 +45,10 @@ import threading
 from types import SimpleNamespace
 import os
 
+import logging
 
+logging.basicConfig(level=logging.INFO)
+logging.info("Бот стартовал")
 #6332859587
 # --- НАСТРОЙКИ ---
 API_TOKEN = "8049195661:AAH_otguTU3rnjP_0dewu8SqD1H0cLLEUB4"
