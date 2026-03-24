@@ -44,14 +44,18 @@ from datetime import datetime, timedelta, date
 import threading
 from types import SimpleNamespace
 import os
+import logging
 
 import logging
+logging.basicConfig(level=logging.INFO)
+logging.info("Бот стартовал")
 
 logging.basicConfig(level=logging.INFO)
 logging.info("Бот стартовал")
 #6332859587
 # --- НАСТРОЙКИ ---
 API_TOKEN = "8049195661:AAH_otguTU3rnjP_0dewu8SqD1H0cLLEUB4"
+bot = telebot.TeleBot(API_TOKEN)
 ADMIN_ID = [6040726738, 5035760364 ]  # <-- ЗАМЕНИ на свой Telegram ID
 #
 ADMIN_ID2 = 6040726738
