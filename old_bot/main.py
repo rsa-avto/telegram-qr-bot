@@ -48,9 +48,7 @@ import os
 
 #6332859587
 # --- НАСТРОЙКИ ---
-from config import API_TOKEN
-
-bot = telebot.TeleBot(API_TOKEN)
+API_TOKEN = "8049195661:AAH_otguTU3rnjP_0dewu8SqD1H0cLLEUB4"
 ADMIN_ID = [6040726738, 5035760364 ]  # <-- ЗАМЕНИ на свой Telegram ID
 #
 ADMIN_ID2 = 6040726738
